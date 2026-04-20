@@ -1,0 +1,30 @@
+[Unit]
+Description=Claude Telegram Bot con herramientas MCP
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ec2-user
+Group=ec2-user
+WorkingDirectory=/opt/mcp/app
+
+Environment=PYTHONPATH=/opt/mcp/app/src
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/home/ec2-user
+# claude-run es un wrapper que carga nvm antes de ejecutar claude
+Environment=CLAUDE_BIN=/usr/local/bin/claude-run
+EnvironmentFile=/opt/mcp/app/.env
+
+ExecStart=/usr/bin/python3.11 -m telegram_bot
+Restart=on-failure
+RestartSec=15
+StartLimitIntervalSec=120
+StartLimitBurst=3
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=telegram-bot
+
+[Install]
+WantedBy=multi-user.target

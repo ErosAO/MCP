@@ -1,0 +1,16 @@
+# Telegram Bot
+python-telegram-bot>=20.7
+
+# MCP Protocol - FastMCP server (para el servidor MCP, opcional)
+mcp>=1.0.0
+
+# Utilidades
+python-dotenv>=1.0.0
+httpx>=0.27.0
+
+# Servidor ASGI para transporte SSE/HTTP del MCP server
+uvicorn>=0.30.0
+
+# Nota: NO se requiere 'anthropic' SDK.
+# El bot usa `claude -p` (Claude Code CLI) como backend de IA.
+# Instala Claude Code con: npm install -g @anthropic-ai/claude-code

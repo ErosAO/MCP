@@ -1,0 +1,273 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Claude MCP Server con Telegram Bot - VPC + EC2 ARM t4g (us-east-2)'
+
+# ============================================================
+# PARÁMETROS
+# ============================================================
+Parameters:
+
+  KeyPairName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: Nombre del Key Pair EC2 para acceso SSH
+
+  InstanceType:
+    Type: String
+    Default: t4g.micro
+    AllowedValues:
+      - t4g.nano
+      - t4g.micro
+      - t4g.small
+    Description: >
+      Tipo de instancia EC2 ARM Graviton2.
+      t4g.nano: 0.5 GB RAM ~$0.0042/hr
+      t4g.micro: 1 GB RAM ~$0.0084/hr (RECOMENDADO)
+      t4g.small: 2 GB RAM ~$0.0168/hr
+
+  SSHAllowedCidr:
+    Type: String
+    Default: 0.0.0.0/0
+    Description: 'CIDR para acceso SSH (restringe a tu IP para mayor seguridad, ej: 1.2.3.4/32)'
+
+  ProjectName:
+    Type: String
+    Default: mcp-server
+    Description: Nombre del proyecto (usado para nombrar recursos)
+
+  VolumeSize:
+    Type: Number
+    Default: 10
+    MinValue: 8
+    MaxValue: 30
+    Description: Tamaño del disco EBS en GB
+
+  # CloudFormation resuelve este parámetro consultando SSM automáticamente
+  # y obtiene el AMI ID correcto para la región donde se despliega
+  LatestAmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64
+    Description: AMI Amazon Linux 2023 ARM64 (se resuelve automáticamente por región)
+
+# ============================================================
+# RECURSOS
+# ============================================================
+Resources:
+
+  # ----------------------------------------------------------
+  # VPC
+  # ----------------------------------------------------------
+  MCPVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-vpc'
+
+  # ----------------------------------------------------------
+  # Internet Gateway (permite salida a internet)
+  # ----------------------------------------------------------
+  MCPInternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-igw'
+
+  MCPVPCGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref MCPVPC
+      InternetGatewayId: !Ref MCPInternetGateway
+
+  # ----------------------------------------------------------
+  # Subnet pública (primera AZ de la región)
+  # ----------------------------------------------------------
+  MCPPublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref MCPVPC
+      CidrBlock: 10.0.1.0/24
+      AvailabilityZone: !Select [ 0, !GetAZs '' ]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-public-subnet'
+
+  # ----------------------------------------------------------
+  # Route Table (enruta tráfico saliente al IGW)
+  # ----------------------------------------------------------
+  MCPRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref MCPVPC
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-rt'
+
+  MCPPublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: MCPVPCGatewayAttachment
+    Properties:
+      RouteTableId: !Ref MCPRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref MCPInternetGateway
+
+  MCPSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref MCPPublicSubnet
+      RouteTableId: !Ref MCPRouteTable
+
+  # ----------------------------------------------------------
+  # Security Group (ahora con VpcId → SecurityGroupEgress funciona)
+  # ----------------------------------------------------------
+  MCPSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub '${ProjectName}-sg'
+      GroupDescription: Security group para Claude MCP Server
+      VpcId: !Ref MCPVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref SSHAllowedCidr
+          Description: SSH access
+      SecurityGroupEgress:
+        - IpProtocol: '-1'
+          CidrIp: 0.0.0.0/0
+          Description: Outbound - Telegram API, Anthropic API, npm, dnf updates
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-sg'
+
+  # ----------------------------------------------------------
+  # IAM Role e Instance Profile
+  # ----------------------------------------------------------
+  MCPInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-ec2-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-ec2-role'
+
+  MCPInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: !Sub '${ProjectName}-ec2-profile'
+      Roles:
+        - !Ref MCPInstanceRole
+
+  # ----------------------------------------------------------
+  # Elastic IP (IP fija para el bot de Telegram)
+  # ----------------------------------------------------------
+  MCPElasticIP:
+    Type: AWS::EC2::EIP
+    DependsOn: MCPVPCGatewayAttachment
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-eip'
+
+  # ----------------------------------------------------------
+  # EC2 Instance (ARM t4g - más barata con Graviton2)
+  # ----------------------------------------------------------
+  MCPInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref LatestAmiId
+      InstanceType: !Ref InstanceType
+      KeyName: !Ref KeyPairName
+      IamInstanceProfile: !Ref MCPInstanceProfile
+      SubnetId: !Ref MCPPublicSubnet
+      SecurityGroupIds:
+        - !Ref MCPSecurityGroup
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: !Ref VolumeSize
+            VolumeType: gp3
+            DeleteOnTermination: true
+            Encrypted: true
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -e
+          exec > /var/log/user-data.log 2>&1
+
+          echo "=== [MCP Setup] Iniciando configuracion del sistema ==="
+          echo "Fecha: $(date)"
+          echo "Instancia: ${InstanceType}"
+          echo "Region: ${AWS::Region}"
+
+          dnf update -y
+          dnf install -y python3.11 python3.11-pip git
+
+          mkdir -p /opt/mcp/app
+          mkdir -p /opt/mcp/files
+          mkdir -p /opt/mcp/logs
+
+          # Swap de 1GB (alivia RAM limitada en t4g.nano/micro)
+          dd if=/dev/zero of=/swapfile bs=128M count=8
+          chmod 600 /swapfile
+          mkswap /swapfile
+          swapon /swapfile
+          echo '/swapfile swap swap defaults 0 0' >> /etc/fstab
+
+          useradd -r -m -s /bin/bash mcp 2>/dev/null || true
+          chown -R mcp:mcp /opt/mcp
+
+          touch /opt/mcp/.instance_ready
+          echo "=== [MCP Setup] Configuracion base completada ==="
+
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-instance'
+        - Key: InstanceType
+          Value: !Ref InstanceType
+
+  MCPEIPAssociation:
+    Type: AWS::EC2::EIPAssociation
+    Properties:
+      InstanceId: !Ref MCPInstance
+      EIP: !Ref MCPElasticIP
+
+# ============================================================
+# OUTPUTS
+# ============================================================
+Outputs:
+
+  InstancePublicIP:
+    Description: IP publica del servidor MCP
+    Value: !Ref MCPElasticIP
+    Export:
+      Name: !Sub '${AWS::StackName}-PublicIP'
+
+  InstanceId:
+    Description: ID de la instancia EC2
+    Value: !Ref MCPInstance
+    Export:
+      Name: !Sub '${AWS::StackName}-InstanceId'
+
+  VPCID:
+    Description: ID de la VPC creada
+    Value: !Ref MCPVPC
+    Export:
+      Name: !Sub '${AWS::StackName}-VPCID'
+
+  SSHCommand:
+    Description: Comando SSH para conectarse
+    Value: !Sub 'ssh -i tu-key.pem ec2-user@${MCPElasticIP}'
