@@ -8,7 +8,7 @@ BLUE='\033[0;34m'; NC='\033[0m'
 STACK_NAME="${STACK_NAME:-mcp-server}"
 AWS_REGION="${AWS_REGION:-us-east-2}"
 AWS_PROFILE="${AWS_PROFILE:-mcp-demo}"
-KEY_FILE="${KEY_FILE:-}"
+KEY_FILE="${KEY_FILE:-$HOME/.ssh/key_pair_mcp_demo.pem}"
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -25,8 +25,9 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-[[ -z "$KEY_FILE" ]] && {
-    echo "Error: KEY_FILE requerido. Usa -f <ruta-al-pem> o exporta KEY_FILE"
+[[ -f "$KEY_FILE" ]] || {
+    echo "Error: No se encontró el archivo de clave: ${KEY_FILE}"
+    echo "Usa -f <ruta-al-pem> o exporta KEY_FILE"
     exit 1
 }
 
