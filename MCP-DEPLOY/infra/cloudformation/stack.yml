@@ -1,0 +1,341 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'MCP Deploy — Bot EC2 + MCP Server EC2 en VPC privada (ARM t4g, us-east-2)'
+
+# ============================================================
+# PARÁMETROS
+# ============================================================
+Parameters:
+
+  KeyPairName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: Nombre del Key Pair EC2 para acceso SSH
+
+  InstanceType:
+    Type: String
+    Default: t4g.micro
+    AllowedValues:
+      - t4g.nano
+      - t4g.micro
+      - t4g.small
+    Description: >
+      Tipo de instancia ARM Graviton2.
+      t4g.nano: 0.5 GB ~$0.0042/hr | t4g.micro: 1 GB ~$0.0084/hr (RECOMENDADO)
+
+  SSHAllowedCidr:
+    Type: String
+    Default: 0.0.0.0/0
+    Description: 'CIDR para SSH (restringe a tu IP: 1.2.3.4/32)'
+
+  ProjectName:
+    Type: String
+    Default: mcp-deploy
+    Description: Prefijo para nombrar todos los recursos
+
+  VolumeSize:
+    Type: Number
+    Default: 10
+    MinValue: 8
+    MaxValue: 30
+    Description: Tamaño del disco EBS en GB (ambas instancias)
+
+  LatestAmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64
+    Description: Amazon Linux 2023 ARM64 (se resuelve automáticamente por región)
+
+# ============================================================
+# RECURSOS
+# ============================================================
+Resources:
+
+  # ──────────────────────────────────────────────────────────
+  # Red: VPC + Subnet + IGW + Route Table
+  # ──────────────────────────────────────────────────────────
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-vpc'
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-igw'
+
+  VPCGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.1.0/24
+      AvailabilityZone: !Select [ 0, !GetAZs '' ]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-public-subnet'
+
+  RouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-rt'
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: VPCGatewayAttachment
+    Properties:
+      RouteTableId: !Ref RouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  SubnetRouteAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet
+      RouteTableId: !Ref RouteTable
+
+  # ──────────────────────────────────────────────────────────
+  # Security Group — Bot (solo SSH desde admin + salida libre)
+  # ──────────────────────────────────────────────────────────
+  BotSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub '${ProjectName}-bot-sg'
+      GroupDescription: SG para el Telegram Bot EC2
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref SSHAllowedCidr
+          Description: SSH admin access
+      SecurityGroupEgress:
+        - IpProtocol: '-1'
+          CidrIp: 0.0.0.0/0
+          Description: Salida — Telegram API, MCP server, internet
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-bot-sg'
+
+  # ──────────────────────────────────────────────────────────
+  # Security Group — MCP Server (SSH + puertos 8080/8081 desde Bot)
+  # ──────────────────────────────────────────────────────────
+  MCPSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub '${ProjectName}-mcp-sg'
+      GroupDescription: SG para el MCP Server EC2
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref SSHAllowedCidr
+          Description: SSH admin access
+        - IpProtocol: tcp
+          FromPort: 8080
+          ToPort: 8081
+          SourceSecurityGroupId: !Ref BotSecurityGroup
+          Description: MCP SSE + API interna solo desde Bot SG
+      SecurityGroupEgress:
+        - IpProtocol: '-1'
+          CidrIp: 0.0.0.0/0
+          Description: Salida — GitHub API, Telegram API, internet
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-mcp-sg'
+
+  # ──────────────────────────────────────────────────────────
+  # IAM Role + Instance Profile (SSM Session Manager)
+  # ──────────────────────────────────────────────────────────
+  InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-ec2-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-ec2-role'
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: !Sub '${ProjectName}-ec2-profile'
+      Roles:
+        - !Ref InstanceRole
+
+  # ──────────────────────────────────────────────────────────
+  # Elastic IP — solo para el Bot (IP pública estable)
+  # ──────────────────────────────────────────────────────────
+  BotElasticIP:
+    Type: AWS::EC2::EIP
+    DependsOn: VPCGatewayAttachment
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-bot-eip'
+
+  # ──────────────────────────────────────────────────────────
+  # EC2 — Bot Telegram
+  # ──────────────────────────────────────────────────────────
+  BotInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref LatestAmiId
+      InstanceType: !Ref InstanceType
+      KeyName: !Ref KeyPairName
+      IamInstanceProfile: !Ref InstanceProfile
+      SubnetId: !Ref PublicSubnet
+      SecurityGroupIds:
+        - !Ref BotSecurityGroup
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: !Ref VolumeSize
+            VolumeType: gp3
+            DeleteOnTermination: true
+            Encrypted: true
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -e
+          exec > /var/log/user-data.log 2>&1
+          echo "=== [Bot Setup] $(date) ==="
+          dnf update -y
+          dnf install -y git
+
+          mkdir -p /opt/mcp-deploy/{app,bin,logs}
+          dd if=/dev/zero of=/swapfile bs=128M count=8
+          chmod 600 /swapfile
+          mkswap /swapfile
+          swapon /swapfile
+          echo '/swapfile swap swap defaults 0 0' >> /etc/fstab
+          chown -R ec2-user:ec2-user /opt/mcp-deploy
+          touch /opt/mcp-deploy/.bot_ready
+          echo "=== [Bot Setup] Completado ==="
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-bot'
+        - Key: Role
+          Value: telegram-bot
+
+  BotEIPAssociation:
+    Type: AWS::EC2::EIPAssociation
+    Properties:
+      InstanceId: !Ref BotInstance
+      EIP: !Ref BotElasticIP
+
+  # ──────────────────────────────────────────────────────────
+  # EC2 — MCP Server
+  # (Sin EIP: usa IP pública efímera solo para outbound a GitHub/Telegram)
+  # ──────────────────────────────────────────────────────────
+  MCPInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref LatestAmiId
+      InstanceType: !Ref InstanceType
+      KeyName: !Ref KeyPairName
+      IamInstanceProfile: !Ref InstanceProfile
+      SubnetId: !Ref PublicSubnet
+      SecurityGroupIds:
+        - !Ref MCPSecurityGroup
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: !Ref VolumeSize
+            VolumeType: gp3
+            DeleteOnTermination: true
+            Encrypted: true
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -e
+          exec > /var/log/user-data.log 2>&1
+          echo "=== [MCP Setup] $(date) ==="
+          dnf update -y
+          dnf install -y git
+
+          # Instalar GitHub CLI
+          dnf install -y 'dnf-command(config-manager)'
+          dnf config-manager --add-repo https://cli.github.com/packages/rpm/gh-cli.repo
+          dnf install -y gh
+
+          mkdir -p /opt/mcp-deploy/{app,bin,logs,scripts}
+          dd if=/dev/zero of=/swapfile bs=128M count=8
+          chmod 600 /swapfile
+          mkswap /swapfile
+          swapon /swapfile
+          echo '/swapfile swap swap defaults 0 0' >> /etc/fstab
+          chown -R ec2-user:ec2-user /opt/mcp-deploy
+          touch /opt/mcp-deploy/.mcp_ready
+          echo "=== [MCP Setup] Completado ==="
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-mcp-server'
+        - Key: Role
+          Value: mcp-server
+
+# ============================================================
+# OUTPUTS
+# ============================================================
+Outputs:
+
+  BotPublicIP:
+    Description: IP pública del Bot (Elastic IP estable)
+    Value: !Ref BotElasticIP
+    Export:
+      Name: !Sub '${AWS::StackName}-BotPublicIP'
+
+  BotInstanceId:
+    Description: ID de la instancia Bot
+    Value: !Ref BotInstance
+    Export:
+      Name: !Sub '${AWS::StackName}-BotInstanceId'
+
+  MCPInstanceId:
+    Description: ID de la instancia MCP Server
+    Value: !Ref MCPInstance
+    Export:
+      Name: !Sub '${AWS::StackName}-MCPInstanceId'
+
+  MCPPrivateIP:
+    Description: IP privada del MCP Server (usa esta en el .env del Bot)
+    Value: !GetAtt MCPInstance.PrivateIp
+    Export:
+      Name: !Sub '${AWS::StackName}-MCPPrivateIP'
+
+  BotSSHCommand:
+    Description: Comando SSH para conectarse al Bot
+    Value: !Sub 'ssh -i <tu-key.pem> ec2-user@${BotElasticIP}'
+
+  MCPSSHCommand:
+    Description: Comando SSH para conectarse al MCP Server
+    Value: !Sub 'ssh -i <tu-key.pem> ec2-user@${MCPInstance.PublicIp}'
+
+  VPCID:
+    Description: ID de la VPC
+    Value: !Ref VPC
+    Export:
+      Name: !Sub '${AWS::StackName}-VPCID'
