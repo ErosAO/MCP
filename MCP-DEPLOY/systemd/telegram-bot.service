@@ -13,6 +13,7 @@ WorkingDirectory=/opt/mcp-deploy/app
 
 Environment=PATH=/usr/local/bin:/usr/bin:/bin
 Environment=HOME=/home/ec2-user
+Environment=CLAUDE_BIN=/usr/local/bin/claude-run
 EnvironmentFile=/opt/mcp-deploy/app/.env
 
 ExecStart=/opt/mcp-deploy/bin/telegram-bot

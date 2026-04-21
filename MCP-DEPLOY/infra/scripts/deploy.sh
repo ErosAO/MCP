@@ -298,6 +298,44 @@ deploy_bot() {
         chmod 640 /opt/mcp-deploy/app/.env
     "
 
+    log_info "Instalando Node.js + Claude Code en el Bot..."
+    ssh $SSH_OPTS "ec2-user@${BOT_PUBLIC_IP}" << 'REMOTE'
+        set -e
+        export NVM_DIR="$HOME/.nvm"
+        if [[ ! -d "$NVM_DIR" ]]; then
+            curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
+        fi
+        [ -s "$NVM_DIR/nvm.sh" ] && source "$NVM_DIR/nvm.sh"
+        nvm install --lts
+        nvm use --lts
+        npm install -g @anthropic-ai/claude-code
+
+        # Wrapper para que systemd encuentre claude sin NVM
+        sudo tee /usr/local/bin/claude-run > /dev/null << 'WRAPPER'
+#!/bin/bash
+export NVM_DIR="/home/ec2-user/.nvm"
+[ -s "$NVM_DIR/nvm.sh" ] && source "$NVM_DIR/nvm.sh"
+exec claude "$@"
+WRAPPER
+        sudo chmod 755 /usr/local/bin/claude-run
+        echo "Claude disponible: $(/usr/local/bin/claude-run --version 2>&1 | head -1)"
+REMOTE
+
+    # Copiar credenciales Claude Code si existen localmente
+    if [[ -f "${HOME}/.claude/.claude.json" ]]; then
+        log_info "Copiando credenciales Claude Code..."
+        ssh $SSH_OPTS "ec2-user@${BOT_PUBLIC_IP}" "mkdir -p ~/.claude"
+        scp $SCP_OPTS "${HOME}/.claude/.claude.json" "ec2-user@${BOT_PUBLIC_IP}:~/.claude/"
+        [[ -f "${HOME}/.claude/settings.json" ]] && \
+            scp $SCP_OPTS "${HOME}/.claude/settings.json" "ec2-user@${BOT_PUBLIC_IP}:~/.claude/"
+        log_ok "Credenciales Claude copiadas"
+    else
+        log_warn "No se encontró ~/.claude/.claude.json"
+        log_warn "Deberás autenticar Claude manualmente en el Bot EC2:"
+        log_warn "  ssh -i ${KEY_FILE} ec2-user@${BOT_PUBLIC_IP}"
+        log_warn "  claude   (sigue las instrucciones de login)"
+    fi
+
     log_info "Instalando servicio systemd del Bot..."
     scp $SCP_OPTS "${ROOT_DIR}/systemd/telegram-bot.service" \
         "ec2-user@${BOT_PUBLIC_IP}:/tmp/"

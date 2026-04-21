@@ -16,6 +16,10 @@ var (
 	AllowedUsers        []string
 	NotificationChatIDs []int64
 
+	// Claude Code CLI
+	ClaudeBin          string
+	MaxHistoryMessages int
+
 	// MCP Server (bind address + ports)
 	MCPServerHost string
 	MCPServerPort int
@@ -55,6 +59,9 @@ func init() {
 	}
 
 	TelegramBotToken = getEnv("TELEGRAM_BOT_TOKEN", "")
+	ClaudeBin = getEnv("CLAUDE_BIN", "claude")
+	MaxHistoryMessages = getEnvInt("MAX_HISTORY_MESSAGES", 20)
+
 	MCPServerHost = getEnv("MCP_SERVER_HOST", "0.0.0.0")
 	MCPServerPort = getEnvInt("MCP_SERVER_PORT", 8080)
 	MCPAPIPort = getEnvInt("MCP_API_PORT", 8081)
