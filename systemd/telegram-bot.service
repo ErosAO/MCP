@@ -2,6 +2,8 @@
 Description=Claude Telegram Bot con herramientas MCP
 After=network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=120
+StartLimitBurst=3
 
 [Service]
 Type=simple
@@ -11,15 +13,12 @@ WorkingDirectory=/opt/mcp/app
 
 Environment=PATH=/usr/local/bin:/usr/bin:/bin
 Environment=HOME=/home/ec2-user
-# claude-run es un wrapper que carga nvm antes de ejecutar claude
 Environment=CLAUDE_BIN=/usr/local/bin/claude-run
 EnvironmentFile=/opt/mcp/app/.env
 
 ExecStart=/opt/mcp/bin/telegram-bot
 Restart=on-failure
 RestartSec=15
-StartLimitIntervalSec=120
-StartLimitBurst=3
 
 StandardOutput=journal
 StandardError=journal
