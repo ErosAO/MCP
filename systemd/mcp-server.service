@@ -9,12 +9,11 @@ User=ec2-user
 Group=ec2-user
 WorkingDirectory=/opt/mcp/app
 
-Environment=PYTHONPATH=/opt/mcp/app/src
 Environment=PATH=/usr/local/bin:/usr/bin:/bin
 Environment=HOME=/home/ec2-user
 EnvironmentFile=/opt/mcp/app/.env
 
-ExecStart=/usr/bin/python3.11 -m mcp_server sse
+ExecStart=/opt/mcp/bin/mcp-server sse
 Restart=on-failure
 RestartSec=10
 

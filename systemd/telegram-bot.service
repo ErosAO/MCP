@@ -9,14 +9,13 @@ User=ec2-user
 Group=ec2-user
 WorkingDirectory=/opt/mcp/app
 
-Environment=PYTHONPATH=/opt/mcp/app/src
 Environment=PATH=/usr/local/bin:/usr/bin:/bin
 Environment=HOME=/home/ec2-user
 # claude-run es un wrapper que carga nvm antes de ejecutar claude
 Environment=CLAUDE_BIN=/usr/local/bin/claude-run
 EnvironmentFile=/opt/mcp/app/.env
 
-ExecStart=/usr/bin/python3.11 -m telegram_bot
+ExecStart=/opt/mcp/bin/telegram-bot
 Restart=on-failure
 RestartSec=15
 StartLimitIntervalSec=120
