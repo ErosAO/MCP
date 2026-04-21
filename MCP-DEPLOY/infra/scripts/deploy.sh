@@ -231,22 +231,33 @@ deploy_mcp_server() {
 
     log_info "Preparando directorios en MCP server..."
     ssh $SSH_OPTS "ec2-user@${MCP_PUBLIC_IP}" \
-        "sudo mkdir -p /opt/mcp-deploy/{app,bin,logs,scripts} && \
-         sudo chown -R ec2-user:ec2-user /opt/mcp-deploy"
+        "sudo mkdir -p /opt/mcp-deploy/{app,bin,logs} && \
+         sudo chown -R ec2-user:ec2-user /opt/mcp-deploy && \
+         mkdir -p /home/ec2-user/repos/FEBOL"
 
     log_info "Copiando binario mcp-server..."
     scp $SCP_OPTS "${ROOT_DIR}/bin/mcp-server" "ec2-user@${MCP_PUBLIC_IP}:/opt/mcp-deploy/bin/"
     ssh $SSH_OPTS "ec2-user@${MCP_PUBLIC_IP}" "chmod +x /opt/mcp-deploy/bin/mcp-server"
 
-    log_info "Copiando script de deploy..."
-    scp $SCP_OPTS "${ROOT_DIR}/scripts/github-deploy.sh" \
-        "ec2-user@${MCP_PUBLIC_IP}:/opt/mcp-deploy/scripts/"
+    # am-febol-devops vive junto al directorio MCP-DEPLOY en el repo local
+    FEBOL_DEVOPS_DIR="$(cd "${ROOT_DIR}/../am-febol-devops" 2>/dev/null && pwd)" || {
+        log_error "No se encontró am-febol-devops/ en ${ROOT_DIR}/../"
+        log_warn "Asegúrate de tener la carpeta am-febol-devops/ al lado de MCP-DEPLOY/"
+        exit 1
+    }
+    log_info "Copiando am-febol-devops a MCP server (deployer.sh + scripts)..."
+    scp -r $SCP_OPTS "${FEBOL_DEVOPS_DIR}" \
+        "ec2-user@${MCP_PUBLIC_IP}:/home/ec2-user/repos/FEBOL/"
     ssh $SSH_OPTS "ec2-user@${MCP_PUBLIC_IP}" \
-        "chmod +x /opt/mcp-deploy/scripts/github-deploy.sh"
+        "chmod +x /home/ec2-user/repos/FEBOL/am-febol-devops/scripts/*.sh"
+    log_ok "Scripts copiados — deployer.sh en /home/ec2-user/repos/FEBOL/am-febol-devops/scripts/"
 
     log_info "Copiando configuración .env al MCP server..."
     scp $SCP_OPTS "${ROOT_DIR}/.env" "ec2-user@${MCP_PUBLIC_IP}:/opt/mcp-deploy/app/.env"
-    ssh $SSH_OPTS "ec2-user@${MCP_PUBLIC_IP}" "chmod 640 /opt/mcp-deploy/app/.env"
+    # Actualizar DEPLOY_SCRIPT_PATH para que apunte al deployer.sh recién copiado
+    ssh $SSH_OPTS "ec2-user@${MCP_PUBLIC_IP}" \
+        "sed -i 's|^DEPLOY_SCRIPT_PATH=.*|DEPLOY_SCRIPT_PATH=/home/ec2-user/repos/FEBOL/am-febol-devops/scripts/deployer.sh|' \
+         /opt/mcp-deploy/app/.env && chmod 640 /opt/mcp-deploy/app/.env"
 
     log_info "Instalando servicio systemd del MCP server..."
     scp $SCP_OPTS "${ROOT_DIR}/systemd/mcp-server.service" \
@@ -364,12 +375,10 @@ deploy_application() {
             log_warn ".env no encontrado. Copiando desde .env.example..."
             cp "${ROOT_DIR}/.env.example" "${ROOT_DIR}/.env"
             log_warn "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-            log_warn "IMPORTANTE: Edita ${ROOT_DIR}/.env"
-            log_warn "  - TELEGRAM_BOT_TOKEN"
-            log_warn "  - GITHUB_MIATECH_TOKEN + GITHUB_MIATECH_ORG"
-            log_warn "  - GITHUB_AEROMEXICO_TOKEN + GITHUB_AEROMEXICO_ORG"
-            log_warn "  - REPO_FACTURACION, REPO_RAM"
-            log_warn "  - ALLOWED_TELEGRAM_USERS"
+            log_warn "IMPORTANTE: Edita ${ROOT_DIR}/.env con estos valores:"
+            log_warn "  - TELEGRAM_BOT_TOKEN   (token de @BotFather)"
+            log_warn "  - ALLOWED_TELEGRAM_USERS  (tus IDs de Telegram)"
+            log_warn "  - NOTIFICATION_CHAT_IDS   (chat donde llegan alertas)"
             log_warn "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
             read -rp "Presiona Enter después de editar .env (Ctrl+C para cancelar)..."
         else
