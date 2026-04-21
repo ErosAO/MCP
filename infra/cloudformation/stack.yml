@@ -214,21 +214,21 @@ Resources:
           echo "Region: ${AWS::Region}"
 
           dnf update -y
-          dnf install -y python3.11 python3.11-pip git
+          dnf install -y git
 
           mkdir -p /opt/mcp/app
           mkdir -p /opt/mcp/files
           mkdir -p /opt/mcp/logs
+          mkdir -p /opt/mcp/bin
 
-          # Swap de 1GB (alivia RAM limitada en t4g.nano/micro)
+          # Swap de 1GB (alivia RAM en t4g.nano/micro)
           dd if=/dev/zero of=/swapfile bs=128M count=8
           chmod 600 /swapfile
           mkswap /swapfile
           swapon /swapfile
           echo '/swapfile swap swap defaults 0 0' >> /etc/fstab
 
-          useradd -r -m -s /bin/bash mcp 2>/dev/null || true
-          chown -R mcp:mcp /opt/mcp
+          chown -R ec2-user:ec2-user /opt/mcp
 
           touch /opt/mcp/.instance_ready
           echo "=== [MCP Setup] Configuracion base completada ==="

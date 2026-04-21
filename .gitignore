@@ -1,2 +1,8 @@
 /.env
 /.env.save
+
+# Go compiled binaries
+/bin/
+*.exe
+*.test
+*.out
