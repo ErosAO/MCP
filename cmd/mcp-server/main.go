@@ -16,6 +16,16 @@ import (
 	"github.com/erosao/mcp/internal/tools"
 )
 
+// strArg extrae un argumento string usando GetArguments() (API oficial de mcp-go v0.48+).
+func strArg(req mcp.CallToolRequest, key string) string {
+	args := req.GetArguments()
+	if args == nil {
+		return ""
+	}
+	v, _ := args[key].(string)
+	return v
+}
+
 func main() {
 	transport := "sse"
 	if len(os.Args) > 1 {
@@ -41,8 +51,7 @@ func main() {
 			mcp.WithString("filename", mcp.Required(), mcp.Description("Nombre o ruta relativa del archivo")),
 		),
 		func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			filename, _ := req.Params.Arguments["filename"].(string)
-			return mcp.NewToolResultText(tools.ReadFile(filename)), nil
+			return mcp.NewToolResultText(tools.ReadFile(strArg(req, "filename"))), nil
 		},
 	)
 
@@ -53,9 +62,7 @@ func main() {
 			mcp.WithString("content", mcp.Required(), mcp.Description("Contenido a escribir")),
 		),
 		func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			filename, _ := req.Params.Arguments["filename"].(string)
-			content, _ := req.Params.Arguments["content"].(string)
-			return mcp.NewToolResultText(tools.WriteFile(filename, content)), nil
+			return mcp.NewToolResultText(tools.WriteFile(strArg(req, "filename"), strArg(req, "content"))), nil
 		},
 	)
 
@@ -65,8 +72,7 @@ func main() {
 			mcp.WithString("directory", mcp.Description("Subdirectorio a listar (vacío = raíz)")),
 		),
 		func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			directory, _ := req.Params.Arguments["directory"].(string)
-			return mcp.NewToolResultText(tools.ListFiles(directory)), nil
+			return mcp.NewToolResultText(tools.ListFiles(strArg(req, "directory"))), nil
 		},
 	)
 
@@ -76,8 +82,7 @@ func main() {
 			mcp.WithString("filename", mcp.Required(), mcp.Description("Nombre o ruta relativa del archivo")),
 		),
 		func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			filename, _ := req.Params.Arguments["filename"].(string)
-			return mcp.NewToolResultText(tools.DeleteFile(filename)), nil
+			return mcp.NewToolResultText(tools.DeleteFile(strArg(req, "filename"))), nil
 		},
 	)
 
@@ -88,9 +93,7 @@ func main() {
 			mcp.WithString("directory", mcp.Description("Directorio donde buscar")),
 		),
 		func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			query, _ := req.Params.Arguments["query"].(string)
-			directory, _ := req.Params.Arguments["directory"].(string)
-			return mcp.NewToolResultText(tools.SearchInFiles(query, directory)), nil
+			return mcp.NewToolResultText(tools.SearchInFiles(strArg(req, "query"), strArg(req, "directory"))), nil
 		},
 	)
 
@@ -100,8 +103,7 @@ func main() {
 			mcp.WithString("filename", mcp.Required(), mcp.Description("Nombre o ruta relativa del archivo")),
 		),
 		func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			filename, _ := req.Params.Arguments["filename"].(string)
-			return mcp.NewToolResultText(tools.GetFileInfo(filename)), nil
+			return mcp.NewToolResultText(tools.GetFileInfo(strArg(req, "filename"))), nil
 		},
 	)
 

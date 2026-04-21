@@ -23,7 +23,7 @@ AWS_PROFILE="${AWS_PROFILE:-mcp-demo}"
 INSTANCE_TYPE="${INSTANCE_TYPE:-t4g.micro}"
 SSH_CIDR="${SSH_CIDR:-0.0.0.0/0}"
 KEY_PAIR_NAME="${KEY_PAIR_NAME:-}"
-KEY_FILE="${KEY_FILE:-}"
+KEY_FILE="${KEY_FILE:-$HOME/.ssh/key_pair_mcp_demo.pem}"
 INFRA_ONLY=false
 APP_ONLY=false
 SKIP_CONFIRM=false
@@ -120,11 +120,11 @@ build_binaries() {
     mkdir -p "${ROOT_DIR}/bin"
 
     log_info "Compilando telegram-bot..."
-    GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" \
+    GOTOOLCHAIN=local GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" \
         -o "${ROOT_DIR}/bin/telegram-bot" "${ROOT_DIR}/cmd/bot/"
 
     log_info "Compilando mcp-server..."
-    GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" \
+    GOTOOLCHAIN=local GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" \
         -o "${ROOT_DIR}/bin/mcp-server" "${ROOT_DIR}/cmd/mcp-server/"
 
     log_ok "Binarios compilados:"
