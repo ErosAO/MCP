@@ -120,11 +120,11 @@ build_binaries() {
     mkdir -p "${ROOT_DIR}/bin"
 
     log_info "Compilando telegram-bot..."
-    GOTOOLCHAIN=local GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" \
+    GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" \
         -o "${ROOT_DIR}/bin/telegram-bot" "${ROOT_DIR}/cmd/bot/"
 
     log_info "Compilando mcp-server..."
-    GOTOOLCHAIN=local GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" \
+    GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" \
         -o "${ROOT_DIR}/bin/mcp-server" "${ROOT_DIR}/cmd/mcp-server/"
 
     log_ok "Binarios compilados:"
