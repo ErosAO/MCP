@@ -1,201 +1,269 @@
 package deploy
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
-	"net/http"
-	"os"
 	"os/exec"
 	"strings"
 	"time"
-
-	"github.com/erosao/mcp-deploy/internal/config"
 )
 
-type Service string
-type Environment string
+// ─── Tipos enumerados ─────────────────────────────────────────────────────────
+
+type Flow string
+type Scope string
+type User string
 
 const (
-	ServiceFacturacion Service = "facturacion"
-	ServiceRAM         Service = "ram"
-
-	EnvDev  Environment = "dev"
-	EnvQA   Environment = "qa"
-	EnvProd Environment = "prod"
+	FlowMiatechToDev Flow = "miatech-to-dev"
+	FlowMiatechToQA  Flow = "miatech-to-qa"
+	FlowDevToQA      Flow = "dev-to-qa"
+	FlowQAToProd     Flow = "qa-to-prod"
 )
 
+const (
+	ScopeIndividual Scope = "individual"
+	ScopeGlobal     Scope = "global"
+	ScopeBoth       Scope = "both"
+)
+
+const (
+	UserFranramvel User = "franramvel"
+	UserErosAO     User = "ErosAO"
+	UserHaztel05   User = "Haztel05"
+	UserDeployer   User = "deployer"
+)
+
+// Label devuelve un texto legible para el flujo.
+func (f Flow) Label() string {
+	switch f {
+	case FlowMiatechToDev:
+		return "Miatech → Dev"
+	case FlowMiatechToQA:
+		return "Miatech → QA"
+	case FlowDevToQA:
+		return "Dev → QA"
+	case FlowQAToProd:
+		return "QA → Prod"
+	default:
+		return string(f)
+	}
+}
+
+// IsProd indica si el flujo llega a producción.
+func (f Flow) IsProd() bool { return f == FlowQAToProd }
+
+// ─── Request / Result ─────────────────────────────────────────────────────────
+
 type Request struct {
-	Service     Service
-	Environment Environment
-	RequestedBy string
-	ChatID      int64
+	Flow  Flow
+	Scope Scope
+	User  User
+}
+
+type Failure struct {
+	Step   string `json:"step"`
+	Repo   string `json:"repo"`
+	Reason string `json:"reason"`
+}
+
+type OKEntry struct {
+	Repo string `json:"repo"`
+	Step string `json:"step"`
+}
+
+type Summary struct {
+	Failures []Failure `json:"failures"`
+	OK       []OKEntry `json:"ok"`
 }
 
 type Result struct {
-	Success bool
-	Message string
-	PRURL   string
+	ExitCode int     `json:"exit_code"`
+	Stdout   string  `json:"stdout"`
+	Stderr   string  `json:"stderr"`
+	Command  string  `json:"command"`
+	Summary  Summary `json:"summary"`
 }
 
-func (r Request) ActionName() string {
-	return fmt.Sprintf("deploy_%s_%s", r.Environment, r.Service)
-}
+// ─── Mapeo flow → flags de deployer.sh ───────────────────────────────────────
 
-func (r Request) DisplayName() string {
-	return fmt.Sprintf("Deploy %s %s", strings.ToUpper(string(r.Environment)), capitalize(string(r.Service)))
-}
-
-func capitalize(s string) string {
-	if s == "" {
-		return s
+// flowFlags convierte un Flow en los flags --until y --chain del script.
+func flowFlags(f Flow) (until, chain string, err error) {
+	switch f {
+	case FlowMiatechToDev:
+		return "dev", "full", nil
+	case FlowMiatechToQA:
+		return "qa", "full", nil
+	case FlowDevToQA:
+		return "qa", "prev", nil
+	case FlowQAToProd:
+		return "pd", "prev", nil
+	default:
+		return "", "", fmt.Errorf("flow inválido: %q (opciones: miatech-to-dev | miatech-to-qa | dev-to-qa | qa-to-prod)", f)
 	}
-	return strings.ToUpper(s[:1]) + s[1:]
 }
 
-// Execute corre el script bash de deploy pasando ambiente y servicio.
-// El script debe imprimir "PR_URL: https://github.com/..." para que se extraiga la URL.
-func Execute(req Request) Result {
-	scriptPath := config.DeployScriptPath
+// ─── Ejecución ────────────────────────────────────────────────────────────────
 
-	if _, err := os.Stat(scriptPath); err != nil {
+// Execute llama a deployer.sh con los flags correctos y retorna el resultado completo.
+// Timeout: 20 minutos (el deploy puede tardar varios minutos).
+func Execute(req Request, scriptPath string) Result {
+	until, chain, err := flowFlags(req.Flow)
+	if err != nil {
+		return Result{ExitCode: 1, Stderr: err.Error()}
+	}
+
+	user := string(req.User)
+	if user == "" {
+		user = string(UserDeployer)
+	}
+
+	args := []string{
+		scriptPath,
+		"--scope", string(req.Scope),
+		"--user", user,
+		"--until", until,
+		"--chain", chain,
+		"--yes",
+	}
+	command := "bash " + strings.Join(args, " ")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "bash", args...)
+	var stdout, stderr strings.Builder
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	runErr := cmd.Run()
+
+	if ctx.Err() == context.DeadlineExceeded {
 		return Result{
-			Success: false,
-			Message: fmt.Sprintf("Script no encontrado en %s — verifica DEPLOY_SCRIPT_PATH", scriptPath),
+			ExitCode: -1,
+			Stdout:   stdout.String(),
+			Stderr:   "timeout: el deploy tardó más de 20 minutos",
+			Command:  command,
 		}
 	}
 
-	cmd := exec.Command("bash", scriptPath, string(req.Environment), string(req.Service))
-
-	// Pasar tokens y configuración como variables de entorno al script.
-	cmd.Env = append(os.Environ(),
-		"GITHUB_MIATECH_TOKEN="+config.GithubMiatechToken,
-		"GITHUB_MIATECH_ORG="+config.GithubMiatechOrg,
-		"GITHUB_AEROMEXICO_TOKEN="+config.GithubAeromexicoToken,
-		"GITHUB_AEROMEXICO_ORG="+config.GithubAeromexicoOrg,
-		"REPO_FACTURACION="+config.RepoFacturacion,
-		"REPO_RAM="+config.RepoRAM,
-		"REQUESTED_BY="+req.RequestedBy,
-	)
-
-	out, err := cmd.CombinedOutput()
-	output := strings.TrimSpace(string(out))
-
-	if err != nil {
-		return Result{
-			Success: false,
-			Message: fmt.Sprintf("Script falló: %s\n\n%s", err.Error(), truncate(output, 1000)),
+	exitCode := 0
+	if runErr != nil {
+		if exitErr, ok := runErr.(*exec.ExitError); ok {
+			exitCode = exitErr.ExitCode()
+		} else {
+			exitCode = 1
 		}
 	}
 
 	return Result{
-		Success: true,
-		Message: output,
-		PRURL:   extractPRURL(output),
+		ExitCode: exitCode,
+		Stdout:   stdout.String(),
+		Stderr:   stderr.String(),
+		Command:  command,
+		Summary:  parseSummary(stdout.String()),
 	}
 }
 
-// extractPRURL busca "PR_URL: https://..." o una URL de PR de GitHub en el output.
-func extractPRURL(output string) string {
-	for _, line := range strings.Split(output, "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "PR_URL:") {
-			return strings.TrimSpace(strings.TrimPrefix(line, "PR_URL:"))
-		}
-		if strings.Contains(line, "github.com") && strings.Contains(line, "/pull/") {
-			for _, word := range strings.Fields(line) {
-				if strings.HasPrefix(word, "https://github.com") && strings.Contains(word, "/pull/") {
-					return strings.TrimRight(word, ".,;)")
-				}
-			}
-		}
-	}
-	return ""
-}
+// ─── Parser del bloque RESUMEN DEPLOY ────────────────────────────────────────
 
-// MonitorPR hace polling al PR de GitHub y llama notifyFn con el resultado final.
-// Polling cada 30 segundos, timeout de 2 horas.
-func MonitorPR(prURL, githubToken string, notifyFn func(success bool, msg string)) {
-	if prURL == "" {
-		return
-	}
+func parseSummary(output string) Summary {
+	var s Summary
 
-	// Parsear: https://github.com/{owner}/{repo}/pull/{number}
-	clean := strings.TrimRight(prURL, "/")
-	parts := strings.Split(clean, "/")
-	if len(parts) < 7 {
-		notifyFn(false, fmt.Sprintf("⚠️ No se pudo parsear la URL del PR: %s", prURL))
-		return
-	}
-	owner := parts[3]
-	repo := parts[4]
-	prNum := parts[6]
-
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
-	timeout := time.After(2 * time.Hour)
-
-	for {
-		select {
-		case <-timeout:
-			notifyFn(false, fmt.Sprintf(
-				"⏰ <b>Timeout monitoreando PR #%s</b>\nVerifica manualmente: %s", prNum, prURL,
-			))
-			return
-		case <-ticker.C:
-			state, merged, err := checkPRStatus(owner, repo, prNum, githubToken)
-			if err != nil {
-				// Error transitorio — seguir intentando
-				continue
-			}
-			if state == "closed" {
-				if merged {
-					notifyFn(true, fmt.Sprintf(
-						"✅ <b>PR #%s mergeado exitosamente</b>\n%s", prNum, prURL,
-					))
-				} else {
-					notifyFn(false, fmt.Sprintf(
-						"❌ <b>PR #%s cerrado sin merge</b>\nDeploy cancelado.\n%s", prNum, prURL,
-					))
-				}
-				return
-			}
-		}
-	}
-}
-
-type githubPRResp struct {
-	State  string `json:"state"`
-	Merged bool   `json:"merged"`
-}
-
-func checkPRStatus(owner, repo, prNum, token string) (state string, merged bool, err error) {
-	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/pulls/%s", owner, repo, prNum)
-
-	req, err := http.NewRequest(http.MethodGet, apiURL, nil)
-	if err != nil {
-		return "", false, err
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", false, err
-	}
-	defer resp.Body.Close()
-
-	var pr githubPRResp
-	if err := json.NewDecoder(resp.Body).Decode(&pr); err != nil {
-		return "", false, err
-	}
-	return pr.State, pr.Merged, nil
-}
-
-func truncate(s string, n int) string {
-	if len(s) <= n {
+	start := strings.Index(output, "====== RESUMEN DEPLOY ======")
+	end := strings.LastIndex(output, "============================")
+	if start < 0 || end <= start {
 		return s
 	}
-	return s[:n] + "..."
+
+	inFail := false
+	inOK := false
+
+	for _, line := range strings.Split(output[start:end], "\n") {
+		trimmed := strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(trimmed, "FALLOS ("):
+			inFail, inOK = true, false
+		case strings.Contains(trimmed, "OK por paso:"):
+			inOK, inFail = true, false
+		case inFail && strings.HasPrefix(trimmed, "["):
+			if step, repo, reason, ok := parseFailureLine(trimmed); ok {
+				s.Failures = append(s.Failures, Failure{Step: step, Repo: repo, Reason: reason})
+			}
+		case inOK && strings.Contains(trimmed, "|"):
+			if repo, step, ok := parseOKLine(trimmed); ok {
+				s.OK = append(s.OK, OKEntry{Repo: repo, Step: step})
+			}
+		}
+	}
+	return s
+}
+
+// parseFailureLine parsea "[step] repo : reason"
+func parseFailureLine(line string) (step, repo, reason string, ok bool) {
+	closeIdx := strings.Index(line, "]")
+	if closeIdx < 0 {
+		return
+	}
+	step = line[1:closeIdx]
+	rest := strings.TrimSpace(line[closeIdx+1:])
+	sepIdx := strings.Index(rest, " : ")
+	if sepIdx < 0 {
+		return
+	}
+	repo = strings.TrimSpace(rest[:sepIdx])
+	reason = strings.TrimSpace(rest[sepIdx+3:])
+	ok = true
+	return
+}
+
+// parseOKLine parsea "repo|step"
+func parseOKLine(line string) (repo, step string, ok bool) {
+	parts := strings.SplitN(line, "|", 2)
+	if len(parts) != 2 {
+		return
+	}
+	repo = strings.TrimSpace(parts[0])
+	step = strings.TrimSpace(parts[1])
+	ok = repo != "" && step != ""
+	return
+}
+
+// ─── Formateo de salida ───────────────────────────────────────────────────────
+
+func (r Result) ToJSON() string {
+	b, _ := json.MarshalIndent(r, "", "  ")
+	return string(b)
+}
+
+// FormatTelegram devuelve un resumen HTML para Telegram.
+func (r Result) FormatTelegram(req Request) string {
+	status := "✅ Completado"
+	if r.ExitCode < 0 {
+		status = "⏰ Timeout (>20 min)"
+	} else if r.ExitCode != 0 {
+		status = fmt.Sprintf("❌ Fallido (exit %d)", r.ExitCode)
+	} else if len(r.Summary.Failures) > 0 {
+		status = fmt.Sprintf("⚠️ Con %d fallo(s)", len(r.Summary.Failures))
+	}
+
+	msg := fmt.Sprintf("<b>%s — %s</b>\n", status, req.Flow.Label())
+	msg += fmt.Sprintf("Scope: <b>%s</b>  |  Usuario: <b>%s</b>\n", req.Scope, req.User)
+
+	if len(r.Summary.OK) > 0 {
+		msg += fmt.Sprintf("\n✅ <b>OK (%d):</b>\n", len(r.Summary.OK))
+		for _, o := range r.Summary.OK {
+			msg += fmt.Sprintf("  • %s [%s]\n", o.Repo, o.Step)
+		}
+	}
+
+	if len(r.Summary.Failures) > 0 {
+		msg += fmt.Sprintf("\n❌ <b>FALLOS (%d):</b>\n", len(r.Summary.Failures))
+		for _, f := range r.Summary.Failures {
+			msg += fmt.Sprintf("  • [%s] %s: %s\n", f.Step, f.Repo, f.Reason)
+		}
+	}
+
+	return strings.TrimRight(msg, "\n")
 }

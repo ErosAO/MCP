@@ -28,21 +28,11 @@ var (
 	// Bot → MCP connection
 	MCPBaseURL string
 
-	// GitHub – cuenta Miatech
-	GithubMiatechToken string
-	GithubMiatechOrg   string
-
-	// GitHub – cuenta Aeromexico
-	GithubAeromexicoToken string
-	GithubAeromexicoOrg   string
-
-	// Nombres de repositorios
-	RepoFacturacion string
-	RepoRAM         string
-
-	// Paths
+	// Ruta al script deployer.sh
 	DeployScriptPath string
-	LogsDir          string
+
+	// Directorio de logs
+	LogsDir string
 )
 
 func init() {
@@ -67,15 +57,7 @@ func init() {
 	MCPAPIPort = getEnvInt("MCP_API_PORT", 8081)
 	MCPBaseURL = getEnv("MCP_BASE_URL", fmt.Sprintf("http://127.0.0.1:%d", MCPServerPort))
 
-	GithubMiatechToken = getEnv("GITHUB_MIATECH_TOKEN", "")
-	GithubMiatechOrg = getEnv("GITHUB_MIATECH_ORG", "miatech")
-	GithubAeromexicoToken = getEnv("GITHUB_AEROMEXICO_TOKEN", "")
-	GithubAeromexicoOrg = getEnv("GITHUB_AEROMEXICO_ORG", "aeromexico")
-
-	RepoFacturacion = getEnv("REPO_FACTURACION", "facturacion")
-	RepoRAM = getEnv("REPO_RAM", "ram")
-
-	DeployScriptPath = getEnv("DEPLOY_SCRIPT_PATH", "/opt/mcp-deploy/scripts/github-deploy.sh")
+	DeployScriptPath = getEnv("DEPLOY_SCRIPT_PATH", "/opt/mcp-deploy/scripts/deployer.sh")
 	LogsDir = getEnv("LOGS_DIR", defaultDir("logs"))
 
 	if raw := getEnv("ALLOWED_TELEGRAM_USERS", ""); raw != "" {

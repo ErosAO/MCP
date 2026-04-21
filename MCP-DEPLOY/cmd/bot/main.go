@@ -11,7 +11,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -61,7 +60,9 @@ func (s *botState) clear(userID int64) {
 // ─── Comunicación con MCP server ─────────────────────────────────────────────
 
 type mcpDeployReq struct {
-	Action      string `json:"action"`
+	Flow        string `json:"flow"`
+	Scope       string `json:"scope"`
+	User        string `json:"user"`
 	RequestedBy string `json:"requested_by"`
 	ChatID      int64  `json:"chat_id"`
 }
@@ -71,11 +72,13 @@ type mcpDeployResp struct {
 	Message string `json:"message"`
 }
 
-func callMCPDeploy(action, requestedBy string, chatID int64) (mcpDeployResp, error) {
+func callMCPDeploy(flow, scope, user, requestedBy string, chatID int64) (mcpDeployResp, error) {
 	url := fmt.Sprintf("http://%s:%d/internal/deploy", config.MCPServerHost, config.MCPAPIPort)
 
 	payload, _ := json.Marshal(mcpDeployReq{
-		Action:      action,
+		Flow:        flow,
+		Scope:       scope,
+		User:        user,
 		RequestedBy: requestedBy,
 		ChatID:      chatID,
 	})
@@ -99,31 +102,19 @@ func callMCPDeploy(action, requestedBy string, chatID int64) (mcpDeployResp, err
 type toolFunc func(args map[string]any, requestedBy string, chatID int64) string
 
 var toolMap = map[string]toolFunc{
-	"deploy_dev_facturacion":  func(a map[string]any, u string, c int64) string { return execDeploy("deploy_dev_facturacion", a, u, c) },
-	"deploy_qa_facturacion":   func(a map[string]any, u string, c int64) string { return execDeploy("deploy_qa_facturacion", a, u, c) },
-	"deploy_prod_facturacion": func(a map[string]any, u string, c int64) string { return execDeploy("deploy_prod_facturacion", a, u, c) },
-	"deploy_dev_ram":          func(a map[string]any, u string, c int64) string { return execDeploy("deploy_dev_ram", a, u, c) },
-	"deploy_qa_ram":           func(a map[string]any, u string, c int64) string { return execDeploy("deploy_qa_ram", a, u, c) },
-	"deploy_prod_ram":         func(a map[string]any, u string, c int64) string { return execDeploy("deploy_prod_ram", a, u, c) },
+	"deploy": func(a map[string]any, u string, c int64) string { return execDeploy(a, u, c) },
 }
 
-func execDeploy(action string, args map[string]any, defaultUser string, defaultChatID int64) string {
-	// Claude puede pasar requested_by y chat_id en los args, o se usan los del contexto.
-	requestedBy := defaultUser
-	if v, ok := args["requested_by"].(string); ok && v != "" {
-		requestedBy = v
-	}
-	chatID := defaultChatID
-	switch v := args["chat_id"].(type) {
-	case string:
-		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
-			chatID = n
-		}
-	case float64:
-		chatID = int64(v)
+func execDeploy(args map[string]any, defaultUser string, defaultChatID int64) string {
+	flow, _ := args["flow"].(string)
+	scope, _ := args["scope"].(string)
+	user, _ := args["user"].(string)
+
+	if flow == "" || scope == "" {
+		return "Error: los parámetros 'flow' y 'scope' son requeridos"
 	}
 
-	result, err := callMCPDeploy(action, requestedBy, chatID)
+	result, err := callMCPDeploy(flow, scope, user, defaultUser, defaultChatID)
 	if err != nil {
 		return "Error al contactar el MCP server: " + err.Error()
 	}
@@ -135,32 +126,40 @@ func execDeploy(action string, args map[string]any, defaultUser string, defaultC
 
 // ─── System prompt ────────────────────────────────────────────────────────────
 
-const systemPrompt = `Eres un asistente de deploys para los servicios Facturación y RAM.
-Tienes acceso a 6 herramientas de deploy que se ejecutan en el MCP server.
+const systemPrompt = `Eres un asistente de deploys para el servicio Facturación (FEBOL).
 
-HERRAMIENTAS DISPONIBLES:
-- deploy_dev_facturacion: Deploy del servicio Facturación en ambiente Dev
-- deploy_qa_facturacion: Deploy del servicio Facturación en ambiente QA
-- deploy_prod_facturacion: Deploy del servicio Facturación en PRODUCCIÓN ⚠️
-- deploy_dev_ram: Deploy del servicio RAM en ambiente Dev
-- deploy_qa_ram: Deploy del servicio RAM en ambiente QA
-- deploy_prod_ram: Deploy del servicio RAM en PRODUCCIÓN ⚠️
+Tienes acceso a la herramienta "deploy" que ejecuta el script deployer.sh.
 
-REGLA IMPORTANTE PARA USAR HERRAMIENTAS:
+HERRAMIENTA DISPONIBLE — "deploy":
+Parámetros:
+  * flow (requerido): flujo de deploy. Valores posibles:
+    - "miatech-to-dev"  → sincroniza Miatech → Dev (todos los pasos desde inicio)
+    - "miatech-to-qa"   → sincroniza Miatech → QA (todos los pasos desde inicio)
+    - "dev-to-qa"       → promueve Dev → QA (solo el paso de promoción)
+    - "qa-to-prod"      → promueve QA → Producción (solo el paso de promoción) ⚠️
+  * scope (requerido): alcance del deploy. Valores posibles:
+    - "individual" → módulos individuales (IRead, IWrite, Portal Individual)
+    - "global"     → módulos globales (CronJobs, Input, Read, Write, Timbrado, Portal)
+    - "both"       → todos los módulos
+  * user (opcional): usuario que ejecuta el script. Por defecto "deployer".
+    Valores válidos: "franramvel", "ErosAO", "Haztel05", "deployer"
+
+REGLA PARA USAR HERRAMIENTAS:
 Cuando necesites ejecutar un deploy, responde EXACTAMENTE con este formato JSON y NADA MÁS:
-{"tool": "nombre_herramienta", "args": {}}
+{"tool": "deploy", "args": {"flow": "...", "scope": "..."}}
 
 Ejemplos:
-{"tool": "deploy_dev_facturacion", "args": {}}
-{"tool": "deploy_qa_ram", "args": {}}
-{"tool": "deploy_prod_facturacion", "args": {}}
+{"tool": "deploy", "args": {"flow": "miatech-to-dev", "scope": "global"}}
+{"tool": "deploy", "args": {"flow": "dev-to-qa", "scope": "both"}}
+{"tool": "deploy", "args": {"flow": "qa-to-prod", "scope": "global"}}
+{"tool": "deploy", "args": {"flow": "miatech-to-dev", "scope": "individual", "user": "ErosAO"}}
 
 REGLAS DE SEGURIDAD:
-- Para deploys a PROD: pide confirmación explícita antes de ejecutar.
-- Si el usuario dice "sí", "confirmo", "ok", "adelante" después de que le advertiste sobre PROD, entonces ejecuta.
-- No ejecutes deploys a PROD si el usuario no ha confirmado explícitamente en este mensaje o el inmediatamente anterior.
+- Para "qa-to-prod" (deploy a PRODUCCIÓN): pide confirmación explícita antes de ejecutar.
+- Solo ejecuta "qa-to-prod" si el usuario confirmó explícitamente en este mensaje o el inmediatamente anterior.
+- Para los otros flujos: ejecuta directamente si el usuario lo solicitó con claridad.
+- Si el usuario no especifica el scope, pregúntale (individual, global, o ambos).
 
-Cuando tengas toda la información para responder, hazlo en texto normal.
 Sé conciso. Responde siempre en el mismo idioma que el usuario.`
 
 func buildPrompt(msgs []message, username string, chatID int64) string {
@@ -232,42 +231,76 @@ func tryParseToolCall(text string) *toolCall {
 
 // ─── Teclados inline ──────────────────────────────────────────────────────────
 
-func deployKeyboard() tgbotapi.InlineKeyboardMarkup {
+// deployFlowKeyboard muestra los 4 flujos de deploy disponibles.
+func deployFlowKeyboard() tgbotapi.InlineKeyboardMarkup {
 	return tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("🟢 Dev Facturación",  "ask:dev:facturacion"),
-			tgbotapi.NewInlineKeyboardButtonData("🟡 QA Facturación",   "ask:qa:facturacion"),
+			tgbotapi.NewInlineKeyboardButtonData("🟢 Miatech → Dev",  "flow:miatech-to-dev"),
+			tgbotapi.NewInlineKeyboardButtonData("🟡 Miatech → QA",   "flow:miatech-to-qa"),
 		),
 		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("🔴 PROD Facturación", "ask:prod:facturacion"),
+			tgbotapi.NewInlineKeyboardButtonData("⬆️ Dev → QA",       "flow:dev-to-qa"),
 		),
 		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("🟢 Dev RAM",          "ask:dev:ram"),
-			tgbotapi.NewInlineKeyboardButtonData("🟡 QA RAM",           "ask:qa:ram"),
-		),
-		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("🔴 PROD RAM",         "ask:prod:ram"),
+			tgbotapi.NewInlineKeyboardButtonData("🔴 QA → PROD ⚠️",   "flow:qa-to-prod"),
 		),
 	)
 }
 
-func confirmKeyboard(env, svc string) tgbotapi.InlineKeyboardMarkup {
+// deployScopeKeyboard muestra los 3 alcances una vez seleccionado el flujo.
+func deployScopeKeyboard(flow string) tgbotapi.InlineKeyboardMarkup {
 	return tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("✅ Confirmar", fmt.Sprintf("do:%s:%s", env, svc)),
+			tgbotapi.NewInlineKeyboardButtonData("👤 Individual", fmt.Sprintf("scope:%s:individual", flow)),
+			tgbotapi.NewInlineKeyboardButtonData("🌐 Global",     fmt.Sprintf("scope:%s:global", flow)),
+			tgbotapi.NewInlineKeyboardButtonData("📦 Ambos",      fmt.Sprintf("scope:%s:both", flow)),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("⬅️ Volver", "back"),
+		),
+	)
+}
+
+func confirmKeyboard(flow, scope string) tgbotapi.InlineKeyboardMarkup {
+	return tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("✅ Confirmar", fmt.Sprintf("do:%s:%s", flow, scope)),
 			tgbotapi.NewInlineKeyboardButtonData("❌ Cancelar",  "cancel"),
 		),
 	)
 }
 
-// ─── Helpers Telegram ─────────────────────────────────────────────────────────
+// ─── Labels ───────────────────────────────────────────────────────────────────
 
-func svcLabel(svc string) string {
-	if svc == "facturacion" {
-		return "Facturación"
+func flowLabel(f string) string {
+	switch f {
+	case "miatech-to-dev":
+		return "Miatech → Dev"
+	case "miatech-to-qa":
+		return "Miatech → QA"
+	case "dev-to-qa":
+		return "Dev → QA"
+	case "qa-to-prod":
+		return "QA → Prod"
+	default:
+		return f
 	}
-	return strings.ToUpper(svc)
 }
+
+func scopeLabel(s string) string {
+	switch s {
+	case "individual":
+		return "Individual"
+	case "global":
+		return "Global"
+	case "both":
+		return "Ambos"
+	default:
+		return s
+	}
+}
+
+// ─── Helpers Telegram ─────────────────────────────────────────────────────────
 
 func sendHTML(b *tgbotapi.BotAPI, chatID int64, text string) {
 	msg := tgbotapi.NewMessage(chatID, text)
@@ -331,18 +364,18 @@ func handleCommand(b *tgbotapi.BotAPI, msg *tgbotapi.Message, state *botState) {
 		name := msg.From.FirstName
 		sendHTML(b, msg.Chat.ID, fmt.Sprintf(
 			"¡Hola, %s! 👋\n\n"+
-				"Soy el asistente de deploys para <b>Facturación</b> y <b>RAM</b>.\n\n"+
+				"Soy el asistente de deploys para <b>Facturación (FEBOL)</b>.\n\n"+
 				"Puedes hablarme en lenguaje natural:\n"+
-				"• <i>\"Haz un deploy de facturación en dev\"</i>\n"+
-				"• <i>\"Despliega RAM en QA\"</i>\n"+
-				"• <i>\"¿Qué ambientes están disponibles?\"</i>\n\n"+
+				"• <i>\"Haz un deploy de miatech a dev en scope global\"</i>\n"+
+				"• <i>\"Promueve dev a qa con scope individual\"</i>\n"+
+				"• <i>\"Deploy a producción scope both\"</i>\n\n"+
 				"O usa /deploy para el menú rápido con botones.\n"+
-				"Usa /help para más opciones.", name,
+				"Usa /help para más información.", name,
 		))
 	case "deploy":
 		sendWithKeyboard(b, msg.Chat.ID,
-			"🚀 <b>Menú de Deploys</b>\n\nSelecciona el deploy a ejecutar:",
-			deployKeyboard(),
+			"🚀 <b>Deploy Facturación</b>\n\nSelecciona el flujo:",
+			deployFlowKeyboard(),
 		)
 	case "help":
 		sendHTML(b, msg.Chat.ID,
@@ -350,11 +383,16 @@ func handleCommand(b *tgbotapi.BotAPI, msg *tgbotapi.Message, state *botState) {
 				"/deploy — Menú rápido con botones\n"+
 				"/clear — Borrar historial de conversación\n"+
 				"/help — Esta ayuda\n\n"+
-				"<b>También puedes escribir directamente:</b>\n"+
-				"• <i>\"Deploy facturación dev\"</i>\n"+
-				"• <i>\"Despliega RAM en producción\"</i>\n"+
-				"• <i>\"¿Cuáles son los ambientes disponibles?\"</i>\n\n"+
-				"⚠️ Los deploys a PROD requieren confirmación.",
+				"<b>Flujos disponibles:</b>\n"+
+				"• <b>Miatech → Dev</b>  — sincroniza desde inicio hasta Dev\n"+
+				"• <b>Miatech → QA</b>   — sincroniza desde inicio hasta QA\n"+
+				"• <b>Dev → QA</b>       — promueve Dev a QA\n"+
+				"• <b>QA → Prod</b>      — promueve QA a Producción ⚠️\n\n"+
+				"<b>Scopes disponibles:</b>\n"+
+				"• <b>Individual</b> — módulos IRead, IWrite, Portal Individual\n"+
+				"• <b>Global</b>     — módulos CronJobs, Input, Read, Write, Timbrado, Portal\n"+
+				"• <b>Ambos</b>      — todos los módulos\n\n"+
+				"⚠️ Los deploys a <b>Prod</b> requieren confirmación explícita.",
 		)
 	case "clear":
 		state.clear(msg.From.ID)
@@ -362,7 +400,7 @@ func handleCommand(b *tgbotapi.BotAPI, msg *tgbotapi.Message, state *botState) {
 	default:
 		sendWithKeyboard(b, msg.Chat.ID,
 			"Comando no reconocido. Usa el menú o escríbeme en lenguaje natural:",
-			deployKeyboard(),
+			deployFlowKeyboard(),
 		)
 	}
 }
@@ -379,50 +417,60 @@ func handleCallback(b *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery, state *botSt
 		username = cb.From.FirstName
 	}
 
+	// max 3 parts: action:flow:scope
 	parts := strings.SplitN(cb.Data, ":", 3)
 	if len(parts) == 0 {
 		return
 	}
 
 	switch parts[0] {
-	case "ask":
+	case "flow":
+		if len(parts) != 2 {
+			return
+		}
+		flow := parts[1]
+		editWithKeyboard(b, chatID, msgID,
+			fmt.Sprintf("🚀 <b>Deploy Facturación</b>\nFlujo: <b>%s</b>\n\nSelecciona el alcance (scope):", flowLabel(flow)),
+			deployScopeKeyboard(flow),
+		)
+
+	case "scope":
 		if len(parts) != 3 {
 			return
 		}
-		env, svc := parts[1], parts[2]
+		flow, scope := parts[1], parts[2]
 		var text string
-		if env == "prod" {
+		if flow == "qa-to-prod" {
 			text = fmt.Sprintf(
 				"⚠️ <b>¡ATENCIÓN — Deploy a PRODUCCIÓN!</b>\n\n"+
-					"Servicio : <b>%s</b>\n"+
-					"Entorno  : <b>PROD</b>\n\n"+
+					"Flujo : <b>%s</b>\n"+
+					"Scope : <b>%s</b>\n\n"+
 					"Esta acción impacta el ambiente de producción.\n"+
 					"¿Confirmas el despliegue?",
-				svcLabel(svc),
+				flowLabel(flow), scopeLabel(scope),
 			)
 		} else {
 			text = fmt.Sprintf(
 				"❓ <b>Confirmar Deploy</b>\n\n"+
-					"Servicio : <b>%s</b>\n"+
-					"Entorno  : <b>%s</b>\n\n"+
+					"Flujo : <b>%s</b>\n"+
+					"Scope : <b>%s</b>\n\n"+
 					"¿Deseas continuar?",
-				svcLabel(svc), strings.ToUpper(env),
+				flowLabel(flow), scopeLabel(scope),
 			)
 		}
-		editWithKeyboard(b, chatID, msgID, text, confirmKeyboard(env, svc))
+		editWithKeyboard(b, chatID, msgID, text, confirmKeyboard(flow, scope))
 
 	case "do":
 		if len(parts) != 3 {
 			return
 		}
-		env, svc := parts[1], parts[2]
-		action := fmt.Sprintf("deploy_%s_%s", env, svc)
+		flow, scope := parts[1], parts[2]
 
 		editText(b, chatID, msgID, fmt.Sprintf(
-			"⏳ Iniciando <b>Deploy %s %s</b>...", strings.ToUpper(env), svcLabel(svc),
+			"⏳ Iniciando deploy <b>%s</b> (scope: %s)...", flowLabel(flow), scopeLabel(scope),
 		))
 
-		result, err := callMCPDeploy(action, username, chatID)
+		result, err := callMCPDeploy(flow, scope, "", username, chatID)
 		if err != nil {
 			editText(b, chatID, msgID, fmt.Sprintf(
 				"❌ <b>Error al contactar el MCP server</b>\n\n<code>%s</code>", err.Error(),
@@ -434,6 +482,12 @@ func handleCallback(b *tgbotapi.BotAPI, cb *tgbotapi.CallbackQuery, state *botSt
 		} else {
 			editText(b, chatID, msgID, fmt.Sprintf("❌ <b>Error:</b> %s", result.Message))
 		}
+
+	case "back":
+		editWithKeyboard(b, chatID, msgID,
+			"🚀 <b>Deploy Facturación</b>\n\nSelecciona el flujo:",
+			deployFlowKeyboard(),
+		)
 
 	case "cancel":
 		editText(b, chatID, msgID, "❌ Deploy cancelado.")

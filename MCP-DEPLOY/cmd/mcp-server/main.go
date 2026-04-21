@@ -10,7 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -20,7 +19,6 @@ import (
 	"github.com/erosao/mcp-deploy/internal/notify"
 )
 
-// strArg extrae un argumento string de la request MCP.
 func strArg(req mcp.CallToolRequest, key string) string {
 	args := req.GetArguments()
 	if args == nil {
@@ -30,100 +28,41 @@ func strArg(req mcp.CallToolRequest, key string) string {
 	return v
 }
 
-// int64Arg extrae un argumento numérico (puede venir como string o float64).
-func int64Arg(req mcp.CallToolRequest, key string) int64 {
-	args := req.GetArguments()
-	if args == nil {
-		return 0
-	}
-	switch v := args[key].(type) {
-	case string:
-		n, _ := strconv.ParseInt(v, 10, 64)
-		return n
-	case float64:
-		return int64(v)
-	case int64:
-		return v
-	}
-	return 0
-}
+// runDeploy ejecuta el deploy de forma sincrónica y envía notificaciones Telegram.
+func runDeploy(dreq deploy.Request, requestedBy string, chatID int64) {
+	slog.Info("deploy started",
+		"flow", dreq.Flow, "scope", dreq.Scope, "user", dreq.User, "by", requestedBy)
 
-// makeDeploy genera el handler MCP para una acción de deploy específica.
-func makeDeploy(svc deploy.Service, env deploy.Environment) func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	return func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		dr := deploy.Request{
-			Service:     svc,
-			Environment: env,
-			RequestedBy: strArg(req, "requested_by"),
-			ChatID:      int64Arg(req, "chat_id"),
-		}
-		go runDeploy(dr)
-		return mcp.NewToolResultText(fmt.Sprintf(
-			"🚀 %s iniciado por @%s. Recibirás notificación al terminar.",
-			dr.DisplayName(), dr.RequestedBy,
-		)), nil
-	}
-}
-
-// runDeploy ejecuta el deploy y envía notificaciones Telegram en cada etapa.
-func runDeploy(req deploy.Request) {
-	slog.Info("deploy started", "action", req.ActionName(), "by", req.RequestedBy)
-
-	// Construir lista única de chat IDs a notificar.
 	chatSet := map[int64]struct{}{}
-	if req.ChatID != 0 {
-		chatSet[req.ChatID] = struct{}{}
+	if chatID != 0 {
+		chatSet[chatID] = struct{}{}
 	}
 	for _, id := range config.NotificationChatIDs {
 		chatSet[id] = struct{}{}
 	}
 	broadcast := func(text string) {
-		for chatID := range chatSet {
-			notify.Send(config.TelegramBotToken, chatID, text)
+		for id := range chatSet {
+			notify.Send(config.TelegramBotToken, id, text)
 		}
 	}
 
 	broadcast(fmt.Sprintf(
-		"⏳ <b>%s</b> en progreso...\nSolicitado por: @%s",
-		req.DisplayName(), req.RequestedBy,
+		"⏳ <b>Deploy %s</b> en progreso...\nScope: <b>%s</b>  |  Usuario: <b>%s</b>\nSolicitado por: @%s",
+		dreq.Flow.Label(), dreq.Scope, dreq.User, requestedBy,
 	))
 
-	result := deploy.Execute(req)
+	result := deploy.Execute(dreq, config.DeployScriptPath)
 
-	if !result.Success {
-		slog.Error("deploy failed", "action", req.ActionName())
-		broadcast(fmt.Sprintf(
-			"❌ <b>%s</b> falló.\nSolicitado por: @%s\n\n<pre>%s</pre>",
-			req.DisplayName(), req.RequestedBy, truncate(result.Message, 800),
-		))
-		return
-	}
-
-	slog.Info("deploy script OK", "pr_url", result.PRURL)
-
-	msg := fmt.Sprintf(
-		"✅ <b>%s</b> - Script ejecutado correctamente.\nSolicitado por: @%s",
-		req.DisplayName(), req.RequestedBy,
-	)
-	if result.PRURL != "" {
-		msg += fmt.Sprintf("\n🔗 PR: %s", result.PRURL)
-	}
-	broadcast(msg)
-
-	if result.PRURL != "" {
-		go deploy.MonitorPR(result.PRURL, config.GithubAeromexicoToken,
-			func(success bool, notifyMsg string) {
-				slog.Info("PR monitor update", "success", success)
-				broadcast(notifyMsg)
-			},
-		)
-	}
+	slog.Info("deploy finished", "exit_code", result.ExitCode, "failures", len(result.Summary.Failures))
+	broadcast(result.FormatTelegram(dreq))
 }
 
 // ─── Internal REST API ────────────────────────────────────────────────────────
 
 type apiDeployReq struct {
-	Action      string `json:"action"`
+	Flow        string `json:"flow"`
+	Scope       string `json:"scope"`
+	User        string `json:"user"`
 	RequestedBy string `json:"requested_by"`
 	ChatID      int64  `json:"chat_id"`
 }
@@ -133,28 +72,19 @@ type apiDeployResp struct {
 	Message string `json:"message"`
 }
 
-func parseAction(action string) (deploy.Service, deploy.Environment, error) {
-	// Formato esperado: deploy_<env>_<service>
-	parts := strings.SplitN(action, "_", 3)
-	if len(parts) != 3 || parts[0] != "deploy" {
-		return "", "", fmt.Errorf("acción inválida: %q (formato: deploy_<env>_<service>)", action)
-	}
-	env := deploy.Environment(parts[1])
-	svc := deploy.Service(parts[2])
-
-	validEnvs := map[deploy.Environment]bool{deploy.EnvDev: true, deploy.EnvQA: true, deploy.EnvProd: true}
-	validSvcs := map[deploy.Service]bool{deploy.ServiceFacturacion: true, deploy.ServiceRAM: true}
-
-	if !validEnvs[env] {
-		return "", "", fmt.Errorf("entorno inválido: %q (opciones: dev, qa, prod)", env)
-	}
-	if !validSvcs[svc] {
-		return "", "", fmt.Errorf("servicio inválido: %q (opciones: facturacion, ram)", svc)
-	}
-	return svc, env, nil
+var validFlows = map[string]bool{
+	"miatech-to-dev": true,
+	"miatech-to-qa":  true,
+	"dev-to-qa":      true,
+	"qa-to-prod":     true,
 }
 
-// startInternalAPI levanta la API HTTP interna para que el bot pueda disparar deploys.
+var validScopes = map[string]bool{
+	"individual": true,
+	"global":     true,
+	"both":       true,
+}
+
 func startInternalAPI() {
 	mux := http.NewServeMux()
 
@@ -173,24 +103,33 @@ func startInternalAPI() {
 			return
 		}
 
-		svc, env, err := parseAction(req.Action)
-		if err != nil {
+		if !validFlows[req.Flow] {
 			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(apiDeployResp{false, err.Error()})
+			json.NewEncoder(w).Encode(apiDeployResp{false,
+				fmt.Sprintf("flow inválido: %q (opciones: miatech-to-dev | miatech-to-qa | dev-to-qa | qa-to-prod)", req.Flow)})
+			return
+		}
+		if !validScopes[req.Scope] {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(apiDeployResp{false,
+				fmt.Sprintf("scope inválido: %q (opciones: individual | global | both)", req.Scope)})
 			return
 		}
 
-		dr := deploy.Request{
-			Service:     svc,
-			Environment: env,
-			RequestedBy: req.RequestedBy,
-			ChatID:      req.ChatID,
+		user := deploy.User(req.User)
+		if user == "" {
+			user = deploy.UserDeployer
 		}
-		go runDeploy(dr)
+		dreq := deploy.Request{
+			Flow:  deploy.Flow(req.Flow),
+			Scope: deploy.Scope(req.Scope),
+			User:  user,
+		}
+		go runDeploy(dreq, req.RequestedBy, req.ChatID)
 
 		json.NewEncoder(w).Encode(apiDeployResp{
 			Success: true,
-			Message: fmt.Sprintf("🚀 %s iniciado. Recibirás notificación al terminar.", dr.DisplayName()),
+			Message: fmt.Sprintf("🚀 Deploy <b>%s</b> iniciado. Recibirás notificación al terminar.", dreq.Flow.Label()),
 		})
 	})
 
@@ -205,13 +144,6 @@ func startInternalAPI() {
 		slog.Error("internal API server failed", "err", err)
 		os.Exit(1)
 	}
-}
-
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "..."
 }
 
 func main() {
@@ -232,27 +164,50 @@ func main() {
 	// Servidor MCP SSE para clientes Claude (puerto 8080)
 	s := server.NewMCPServer("MCP Deploy Server", "1.0.0")
 
-	add := func(name, desc string, svc deploy.Service, env deploy.Environment) {
-		s.AddTool(
-			mcp.NewTool(name,
-				mcp.WithDescription(desc),
-				mcp.WithString("requested_by",
-					mcp.Description("Username de Telegram de quien solicita el deploy"),
-				),
-				mcp.WithString("chat_id",
-					mcp.Description("Chat ID de Telegram para recibir notificaciones"),
-				),
+	s.AddTool(
+		mcp.NewTool("deploy",
+			mcp.WithDescription("Ejecuta deployer.sh para sincronizar y desplegar el servicio Facturación entre ambientes."),
+			mcp.WithString("flow",
+				mcp.Required(),
+				mcp.Description("Flujo de deploy: miatech-to-dev | miatech-to-qa | dev-to-qa | qa-to-prod"),
 			),
-			makeDeploy(svc, env),
-		)
-	}
+			mcp.WithString("scope",
+				mcp.Required(),
+				mcp.Description("Alcance del deploy: individual | global | both"),
+			),
+			mcp.WithString("user",
+				mcp.Description("Usuario que ejecuta el script: franramvel | ErosAO | Haztel05 | deployer (default)"),
+			),
+			mcp.WithString("requested_by",
+				mcp.Description("Username de Telegram de quien solicita el deploy"),
+			),
+			mcp.WithString("chat_id",
+				mcp.Description("Chat ID de Telegram para notificaciones (string numérico)"),
+			),
+		),
+		func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			flow := deploy.Flow(strArg(req, "flow"))
+			scope := deploy.Scope(strArg(req, "scope"))
+			user := deploy.User(strArg(req, "user"))
+			if user == "" {
+				user = deploy.UserDeployer
+			}
+			requestedBy := strArg(req, "requested_by")
 
-	add("deploy_dev_facturacion",  "Deploy a Dev del servicio Facturación",  deploy.ServiceFacturacion, deploy.EnvDev)
-	add("deploy_qa_facturacion",   "Deploy a QA del servicio Facturación",   deploy.ServiceFacturacion, deploy.EnvQA)
-	add("deploy_prod_facturacion", "Deploy a Prod del servicio Facturación", deploy.ServiceFacturacion, deploy.EnvProd)
-	add("deploy_dev_ram",          "Deploy a Dev del servicio RAM",          deploy.ServiceRAM, deploy.EnvDev)
-	add("deploy_qa_ram",           "Deploy a QA del servicio RAM",           deploy.ServiceRAM, deploy.EnvQA)
-	add("deploy_prod_ram",         "Deploy a Prod del servicio RAM",         deploy.ServiceRAM, deploy.EnvProd)
+			var chatID int64
+			if s := strArg(req, "chat_id"); s != "" {
+				chatID, _ = strconv.ParseInt(s, 10, 64)
+			}
+
+			dreq := deploy.Request{Flow: flow, Scope: scope, User: user}
+			go runDeploy(dreq, requestedBy, chatID)
+
+			return mcp.NewToolResultText(fmt.Sprintf(
+				"🚀 Deploy %s (scope: %s, user: %s) iniciado por @%s. Recibirás notificación al terminar.",
+				flow.Label(), scope, user, requestedBy,
+			)), nil
+		},
+	)
 
 	mcpAddr := fmt.Sprintf("0.0.0.0:%d", config.MCPServerPort)
 	slog.Info("Starting MCP SSE server", "addr", mcpAddr)
