@@ -259,6 +259,62 @@ deploy_mcp_server() {
         "sed -i 's|^DEPLOY_SCRIPT_PATH=.*|DEPLOY_SCRIPT_PATH=/home/ec2-user/repos/FEBOL/am-febol-devops/scripts/deployer.sh|' \
          /opt/mcp-deploy/app/.env && chmod 640 /opt/mcp-deploy/app/.env"
 
+    # ── Leer tokens GitHub del .env local ──────────────────────────────────────
+    local MIATECH_TOKEN AMX_TOKEN
+    MIATECH_TOKEN=$(grep '^GITHUB_MIATECH_TOKEN=' "${ROOT_DIR}/.env" | cut -d'=' -f2-)
+    AMX_TOKEN=$(grep '^GITHUB_AEROMEXICO_TOKEN=' "${ROOT_DIR}/.env" | cut -d'=' -f2-)
+
+    [[ -z "$MIATECH_TOKEN" ]] && {
+        log_error "GITHUB_MIATECH_TOKEN no configurado en .env"
+        log_warn "Agrega el token PAT de Miatech (permisos: repo, read:org)"
+        exit 1
+    }
+    [[ -z "$AMX_TOKEN" ]] && {
+        log_error "GITHUB_AEROMEXICO_TOKEN no configurado en .env"
+        log_warn "Agrega el token PAT de Aeromexico (permisos: repo, workflow, read:org, write:org)"
+        exit 1
+    }
+
+    log_info "Autenticando cuentas GitHub en MCP server..."
+    ssh $SSH_OPTS "ec2-user@${MCP_PUBLIC_IP}" \
+        "printf '%s' '${MIATECH_TOKEN}' | gh auth login --hostname github.com --with-token"
+    ssh $SSH_OPTS "ec2-user@${MCP_PUBLIC_IP}" \
+        "printf '%s' '${AMX_TOKEN}' | gh auth login --hostname github.com --with-token"
+    log_ok "Cuentas GitHub autenticadas: $(ssh $SSH_OPTS ec2-user@${MCP_PUBLIC_IP} 'gh auth status 2>&1 | grep Logged' | tr '\n' ' ')"
+
+    log_info "Clonando repositorios Miatech en MCP server..."
+    ssh $SSH_OPTS "ec2-user@${MCP_PUBLIC_IP}" "
+        mkdir -p ~/repos/FEBOL/miatech
+        cd ~/repos/FEBOL/miatech
+        for repo in am-fe-mx-api mi-fe-mx-front mi-fe-mx-front-individual; do
+            if [ -d \"\$repo\" ]; then
+                echo \"  \$repo: actualizando...\"
+                git -C \"\$repo\" pull --ff-only 2>/dev/null || true
+            else
+                echo \"  \$repo: clonando...\"
+                GH_TOKEN='${MIATECH_TOKEN}' gh repo clone miatechinternational/\$repo
+            fi
+        done
+    "
+
+    log_info "Clonando repositorios Aeromexico en MCP server..."
+    ssh $SSH_OPTS "ec2-user@${MCP_PUBLIC_IP}" "
+        mkdir -p ~/repos/FEBOL/am
+        cd ~/repos/FEBOL/am
+        for repo in FEBOL_MX_Backend_Read FEBOL_MX_Backend_CronJobs FEBOL_MX_Backend_Timbrado \
+                    FEBOL_MX_Backend_Input FEBOL_MX_Backend_Write FEBOL_MX_Backend_IRead \
+                    FEBOL_MX_Backend_IWrite FEBOL_MX_Portal_Individual FEBOL_MX_Portal; do
+            if [ -d \"\$repo\" ]; then
+                echo \"  \$repo: actualizando...\"
+                git -C \"\$repo\" pull --ff-only 2>/dev/null || true
+            else
+                echo \"  \$repo: clonando...\"
+                GH_TOKEN='${AMX_TOKEN}' gh repo clone BO-AMX/\$repo
+            fi
+        done
+    "
+    log_ok "Repositorios clonados en ~/repos/FEBOL/"
+
     log_info "Instalando servicio systemd del MCP server..."
     scp $SCP_OPTS "${ROOT_DIR}/systemd/mcp-server.service" \
         "ec2-user@${MCP_PUBLIC_IP}:/tmp/"
@@ -376,9 +432,11 @@ deploy_application() {
             cp "${ROOT_DIR}/.env.example" "${ROOT_DIR}/.env"
             log_warn "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
             log_warn "IMPORTANTE: Edita ${ROOT_DIR}/.env con estos valores:"
-            log_warn "  - TELEGRAM_BOT_TOKEN   (token de @BotFather)"
-            log_warn "  - ALLOWED_TELEGRAM_USERS  (tus IDs de Telegram)"
-            log_warn "  - NOTIFICATION_CHAT_IDS   (chat donde llegan alertas)"
+            log_warn "  - TELEGRAM_BOT_TOKEN       (token de @BotFather)"
+            log_warn "  - ALLOWED_TELEGRAM_USERS   (IDs de Telegram autorizados)"
+            log_warn "  - NOTIFICATION_CHAT_IDS    (chat donde llegan alertas)"
+            log_warn "  - GITHUB_MIATECH_TOKEN     (PAT de la cuenta Miatech)"
+            log_warn "  - GITHUB_AEROMEXICO_TOKEN  (PAT de la cuenta Aeromexico)"
             log_warn "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
             read -rp "Presiona Enter después de editar .env (Ctrl+C para cancelar)..."
         else
