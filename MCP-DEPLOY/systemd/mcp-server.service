@@ -1,0 +1,25 @@
+[Unit]
+Description=MCP Deploy Server — SSE + Internal API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ec2-user
+Group=ec2-user
+WorkingDirectory=/opt/mcp-deploy/app
+
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/home/ec2-user
+EnvironmentFile=/opt/mcp-deploy/app/.env
+
+ExecStart=/opt/mcp-deploy/bin/mcp-server
+Restart=on-failure
+RestartSec=10
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=mcp-server
+
+[Install]
+WantedBy=multi-user.target
