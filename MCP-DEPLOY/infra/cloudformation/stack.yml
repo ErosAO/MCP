@@ -125,7 +125,7 @@ Resources:
       SecurityGroupEgress:
         - IpProtocol: '-1'
           CidrIp: 0.0.0.0/0
-          Description: Salida — Telegram API, MCP server, internet
+          Description: Outbound - Telegram API, MCP server, internet
       Tags:
         - Key: Name
           Value: !Sub '${ProjectName}-bot-sg'
@@ -153,7 +153,7 @@ Resources:
       SecurityGroupEgress:
         - IpProtocol: '-1'
           CidrIp: 0.0.0.0/0
-          Description: Salida — GitHub API, Telegram API, internet
+          Description: Outbound - GitHub API, Telegram API, internet
       Tags:
         - Key: Name
           Value: !Sub '${ProjectName}-mcp-sg'
