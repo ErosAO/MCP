@@ -78,7 +78,7 @@ En desarrollo local, usa `127.0.0.1` si corres ambos servicios en la misma máqu
 
 | Variable | Default | Descripción |
 |----------|---------|-------------|
-| `DEPLOY_SCRIPT_PATH` | `/opt/mcp-deploy/scripts/github-deploy.sh` | Ruta al script bash |
+| `DEPLOY_SCRIPT_PATH` | `/home/ec2-user/repos/FEBOL/am-febol-devops/scripts/deployer.sh` | Ruta al script bash (el deploy.sh la configura automáticamente) |
 | `LOGS_DIR` | `/opt/mcp-deploy/logs` | Directorio de logs |
 
 ## Instalación de clientes requeridos
@@ -100,7 +100,7 @@ sudo ./aws/install
 brew install awscli
 
 # Configurar perfil
-aws configure --profile mcp-deploy
+aws configure --profile mcp-demo
 # AWS Access Key ID: <tu-access-key>
 # AWS Secret Access Key: <tu-secret-key>
 # Default region: us-east-2
@@ -153,15 +153,16 @@ Incluidos en la mayoría de sistemas. En Windows usa Git Bash o WSL.
 
 ```bash
 # Crear key pair (solo una vez)
-aws --profile mcp-deploy ec2 create-key-pair \
-    --key-name mcp-deploy-key \
+aws --profile mcp-demo ec2 create-key-pair \
+    --key-name key_pair_mcp_demo \
     --query 'KeyMaterial' \
     --output text \
-    --region us-east-2 > ~/.ssh/mcp-deploy-key.pem
+    --region us-east-2 > ~/.ssh/key_pair_mcp_demo.pem
 
-chmod 400 ~/.ssh/mcp-deploy-key.pem
+chmod 400 ~/.ssh/key_pair_mcp_demo.pem
 
-# Exportar para el script de deploy
-export KEY_PAIR_NAME=mcp-deploy-key
-export KEY_FILE=~/.ssh/mcp-deploy-key.pem
+# Los defaults del script ya apuntan a estos valores.
+# Solo necesitas exportar si usas nombres distintos:
+export KEY_PAIR_NAME=key_pair_mcp_demo
+export KEY_FILE=~/.ssh/key_pair_mcp_demo.pem
 ```

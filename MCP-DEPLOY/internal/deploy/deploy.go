@@ -249,7 +249,7 @@ func (r Result) FormatTelegram(req Request) string {
 	}
 
 	msg := fmt.Sprintf("<b>%s — %s</b>\n", status, req.Flow.Label())
-	msg += fmt.Sprintf("Scope: <b>%s</b>  |  Usuario: <b>%s</b>\n", req.Scope, req.User)
+	msg += fmt.Sprintf("Scope: <b>%s</b>\n", req.Scope)
 
 	if len(r.Summary.OK) > 0 {
 		msg += fmt.Sprintf("\n✅ <b>OK (%d):</b>\n", len(r.Summary.OK))

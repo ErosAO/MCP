@@ -34,7 +34,7 @@ AWS_REGION="${AWS_REGION:-us-east-2}"
 AWS_PROFILE="${AWS_PROFILE:-mcp-demo}"
 INSTANCE_TYPE="${INSTANCE_TYPE:-t4g.micro}"
 SSH_CIDR="${SSH_CIDR:-0.0.0.0/0}"
-KEY_PAIR_NAME="${KEY_PAIR_NAME:-}"
+KEY_PAIR_NAME="${KEY_PAIR_NAME:-key_pair_mcp_demo}"
 KEY_FILE="${KEY_FILE:-$HOME/.ssh/key_pair_mcp_demo.pem}"
 INFRA_ONLY=false
 APP_ONLY=false
@@ -211,8 +211,11 @@ wait_for_ssh() {
 }
 
 # ─── Desplegar MCP Server ─────────────────────────────────────────────────────
+# Nota: MCP_PRIVATE_IP es global — deploy_application() lo lee después de llamar aquí
+MCP_PRIVATE_IP=""
+
 deploy_mcp_server() {
-    local MCP_PUBLIC_IP MCP_PRIVATE_IP
+    local MCP_PUBLIC_IP
     MCP_PUBLIC_IP=$(aws ec2 describe-instances \
         --filters "Name=tag:Name,Values=${STACK_NAME}-mcp-server" "Name=instance-state-name,Values=running" \
         --query "Reservations[0].Instances[0].PublicIpAddress" --output text 2>/dev/null || echo "")
@@ -236,6 +239,7 @@ deploy_mcp_server() {
          mkdir -p /home/ec2-user/repos/FEBOL"
 
     log_info "Copiando binario mcp-server..."
+    ssh $SSH_OPTS "ec2-user@${MCP_PUBLIC_IP}" "sudo systemctl stop mcp-server 2>/dev/null || true"
     scp $SCP_OPTS "${ROOT_DIR}/bin/mcp-server" "ec2-user@${MCP_PUBLIC_IP}:/opt/mcp-deploy/bin/"
     ssh $SSH_OPTS "ec2-user@${MCP_PUBLIC_IP}" "chmod +x /opt/mcp-deploy/bin/mcp-server"
 
@@ -246,8 +250,10 @@ deploy_mcp_server() {
         exit 1
     }
     log_info "Copiando am-febol-devops a MCP server (deployer.sh + scripts)..."
-    scp -r $SCP_OPTS "${FEBOL_DEVOPS_DIR}" \
-        "ec2-user@${MCP_PUBLIC_IP}:/home/ec2-user/repos/FEBOL/"
+    rsync -az --exclude='.git' \
+        -e "ssh -o StrictHostKeyChecking=no -i ${KEY_FILE}" \
+        "${FEBOL_DEVOPS_DIR}/" \
+        "ec2-user@${MCP_PUBLIC_IP}:/home/ec2-user/repos/FEBOL/am-febol-devops/"
     ssh $SSH_OPTS "ec2-user@${MCP_PUBLIC_IP}" \
         "chmod +x /home/ec2-user/repos/FEBOL/am-febol-devops/scripts/*.sh"
     log_ok "Scripts copiados — deployer.sh en /home/ec2-user/repos/FEBOL/am-febol-devops/scripts/"
@@ -292,7 +298,7 @@ deploy_mcp_server() {
                 git -C \"\$repo\" pull --ff-only 2>/dev/null || true
             else
                 echo \"  \$repo: clonando...\"
-                GH_TOKEN='${MIATECH_TOKEN}' gh repo clone miatechinternational/\$repo
+                git clone "https://x-access-token:${MIATECH_TOKEN}@github.com/miatechinternational/\$repo.git"
             fi
         done
     "
@@ -309,7 +315,7 @@ deploy_mcp_server() {
                 git -C \"\$repo\" pull --ff-only 2>/dev/null || true
             else
                 echo \"  \$repo: clonando...\"
-                GH_TOKEN='${AMX_TOKEN}' gh repo clone BO-AMX/\$repo
+                git clone "https://x-access-token:${AMX_TOKEN}@github.com/BO-AMX/\$repo.git"
             fi
         done
     "
@@ -327,7 +333,6 @@ deploy_mcp_server() {
         sudo systemctl status mcp-server --no-pager || true
     "
     log_ok "MCP Server desplegado"
-    echo "$MCP_PRIVATE_IP"
 }
 
 # ─── Desplegar Bot ────────────────────────────────────────────────────────────
@@ -353,6 +358,7 @@ deploy_bot() {
          sudo chown -R ec2-user:ec2-user /opt/mcp-deploy"
 
     log_info "Copiando binario telegram-bot..."
+    ssh $SSH_OPTS "ec2-user@${BOT_PUBLIC_IP}" "sudo systemctl stop telegram-bot 2>/dev/null || true"
     scp $SCP_OPTS "${ROOT_DIR}/bin/telegram-bot" "ec2-user@${BOT_PUBLIC_IP}:/opt/mcp-deploy/bin/"
     ssh $SSH_OPTS "ec2-user@${BOT_PUBLIC_IP}" "chmod +x /opt/mcp-deploy/bin/telegram-bot"
 
@@ -387,6 +393,10 @@ WRAPPER
         sudo chmod 755 /usr/local/bin/claude-run
         echo "Claude disponible: $(/usr/local/bin/claude-run --version 2>&1 | head -1)"
 REMOTE
+
+    # Apuntar CLAUDE_BIN al wrapper que funciona sin nvm en systemd
+    ssh $SSH_OPTS "ec2-user@${BOT_PUBLIC_IP}" \
+        "sed -i 's|^CLAUDE_BIN=.*|CLAUDE_BIN=/usr/local/bin/claude-run|' /opt/mcp-deploy/app/.env"
 
     # Copiar credenciales Claude Code si existen localmente
     if [[ -f "${HOME}/.claude/.claude.json" ]]; then
@@ -447,7 +457,7 @@ deploy_application() {
 
     build_binaries
 
-    MCP_PRIVATE_IP=$(deploy_mcp_server)
+    deploy_mcp_server
     deploy_bot "$MCP_PRIVATE_IP"
 
     local BOT_PUBLIC_IP

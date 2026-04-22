@@ -141,9 +141,6 @@ Parámetros:
     - "individual" → módulos individuales (IRead, IWrite, Portal Individual)
     - "global"     → módulos globales (CronJobs, Input, Read, Write, Timbrado, Portal)
     - "both"       → todos los módulos
-  * user (opcional): usuario que ejecuta el script. Por defecto "deployer".
-    Valores válidos: "franramvel", "ErosAO", "Haztel05", "deployer"
-
 REGLA PARA USAR HERRAMIENTAS:
 Cuando necesites ejecutar un deploy, responde EXACTAMENTE con este formato JSON y NADA MÁS:
 {"tool": "deploy", "args": {"flow": "...", "scope": "..."}}
@@ -152,7 +149,7 @@ Ejemplos:
 {"tool": "deploy", "args": {"flow": "miatech-to-dev", "scope": "global"}}
 {"tool": "deploy", "args": {"flow": "dev-to-qa", "scope": "both"}}
 {"tool": "deploy", "args": {"flow": "qa-to-prod", "scope": "global"}}
-{"tool": "deploy", "args": {"flow": "miatech-to-dev", "scope": "individual", "user": "ErosAO"}}
+{"tool": "deploy", "args": {"flow": "miatech-to-dev", "scope": "individual"}}
 
 REGLAS DE SEGURIDAD:
 - Para "qa-to-prod" (deploy a PRODUCCIÓN): pide confirmación explícita antes de ejecutar.

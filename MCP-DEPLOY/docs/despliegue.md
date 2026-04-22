@@ -16,20 +16,20 @@ Ver instrucciones detalladas en [configuracion.md](configuracion.md).
 ## Paso 1 — Configurar credenciales AWS
 
 ```bash
-aws configure --profile mcp-deploy
+aws configure --profile mcp-demo
 # Introduce: Access Key, Secret Key, us-east-2, json
 ```
 
 ## Paso 2 — Crear Key Pair EC2
 
 ```bash
-aws --profile mcp-deploy ec2 create-key-pair \
-    --key-name mcp-deploy-key \
+aws --profile mcp-demo ec2 create-key-pair \
+    --key-name key_pair_mcp_demo \
     --query 'KeyMaterial' \
     --output text \
-    --region us-east-2 > ~/.ssh/mcp-deploy-key.pem
+    --region us-east-2 > ~/.ssh/key_pair_mcp_demo.pem
 
-chmod 400 ~/.ssh/mcp-deploy-key.pem
+chmod 400 ~/.ssh/key_pair_mcp_demo.pem
 ```
 
 ## Paso 3 — Configurar .env
@@ -41,73 +41,74 @@ nano .env   # Completa TODOS los campos requeridos
 ```
 
 Variables mínimas requeridas:
-- `TELEGRAM_BOT_TOKEN`
-- `GITHUB_MIATECH_TOKEN` + `GITHUB_MIATECH_ORG`
-- `GITHUB_AEROMEXICO_TOKEN` + `GITHUB_AEROMEXICO_ORG`
-- `REPO_FACTURACION` + `REPO_RAM`
-- `ALLOWED_TELEGRAM_USERS`
+
+| Variable | Descripción |
+|----------|-------------|
+| `TELEGRAM_BOT_TOKEN` | Token del bot de @BotFather |
+| `ALLOWED_TELEGRAM_USERS` | IDs Telegram autorizados (separados por coma) |
+| `GITHUB_MIATECH_TOKEN` | PAT de la cuenta Miatech (permisos: `repo`, `read:org`) |
+| `GITHUB_AEROMEXICO_TOKEN` | PAT de la cuenta Aeromexico (permisos: `repo`, `workflow`, `read:org`) |
 
 ## Paso 4 — Ejecutar el deploy
 
 ```bash
 cd MCP-DEPLOY/infra/scripts
 
-# Opción A: Con variables de entorno
-export KEY_PAIR_NAME=mcp-deploy-key
-export KEY_FILE=~/.ssh/mcp-deploy-key.pem
-export AWS_PROFILE=mcp-deploy
+# Con los defaults del proyecto (perfil mcp-demo, key key_pair_mcp_demo)
 ./deploy.sh
 
-# Opción B: Con argumentos explícitos
+# Con argumentos explícitos
 ./deploy.sh \
-    -k mcp-deploy-key \
-    -f ~/.ssh/mcp-deploy-key.pem \
-    -p mcp-deploy \
+    -k key_pair_mcp_demo \
+    -f ~/.ssh/key_pair_mcp_demo.pem \
+    -p mcp-demo \
     -r us-east-2
 
-# Solo infraestructura (no despliega la app)
-./deploy.sh -k mcp-deploy-key --infra-only
+# Solo infraestructura (CloudFormation, sin copiar binarios)
+./deploy.sh -k key_pair_mcp_demo --infra-only
 
-# Solo aplicación (infra ya existe)
-./deploy.sh -f ~/.ssh/mcp-deploy-key.pem --app-only
+# Solo aplicación (la infra ya existe)
+./deploy.sh --app-only
 ```
 
 El script hace todo automáticamente:
-1. ✅ Verifica prerrequisitos
-2. ✅ Despliega CloudFormation (2 instancias EC2)
+1. ✅ Verifica prerrequisitos (aws, go, gh, ssh)
+2. ✅ Despliega CloudFormation (2 instancias EC2 ARM t4g.micro)
 3. ✅ Compila binarios Go para `linux/arm64`
-4. ✅ Copia MCP server + script a EC2-MCP
-5. ✅ Copia Bot a EC2-Bot con IP privada del MCP
-6. ✅ Instala y arranca servicios systemd en ambas instancias
+4. ✅ Despliega MCP server (binario + repos GitHub + servicio systemd)
+5. ✅ Despliega Bot Telegram (binario + Node.js + claude-run + servicio systemd)
 
 Duración aproximada: **8-12 minutos** (primera vez).
 
-## Paso 5 — Verificar el despliegue
+## Paso 5 — Autenticar Claude en el Bot EC2
+
+El deploy instala Claude Code automáticamente, pero necesitas autenticarte manualmente la primera vez. Si ya tienes credenciales locales en `~/.claude/.claude.json`, el script las copia automáticamente.
+
+Si no:
 
 ```bash
-# Health check del MCP server (desde el Bot EC2 o con SSH)
-ssh -i ~/.ssh/mcp-deploy-key.pem ec2-user@<BOT-IP>
-curl http://<MCP-PRIVATE-IP>:8081/internal/health
+# Conectar al Bot EC2
+ssh -i ~/.ssh/key_pair_mcp_demo.pem ec2-user@<BOT-IP>
 
-# Logs del MCP server
-./ssh-connect.sh --mcp -f ~/.ssh/mcp-deploy-key.pem
-sudo journalctl -u mcp-server -f
+# Autenticar (abre una URL en el navegador)
+claude
 
-# Logs del Bot
-./ssh-connect.sh --bot -f ~/.ssh/mcp-deploy-key.pem
-sudo journalctl -u telegram-bot -f
+# Una vez autenticado, reiniciar el servicio
+sudo systemctl restart telegram-bot
+sudo systemctl status telegram-bot
 ```
 
-## Conectarse via SSH
+## Paso 6 — Verificar el despliegue
 
 ```bash
-cd MCP-DEPLOY/infra/scripts
-
 # Conectar al Bot
-./ssh-connect.sh --bot -f ~/.ssh/mcp-deploy-key.pem
+ssh -i ~/.ssh/key_pair_mcp_demo.pem ec2-user@<BOT-IP>
 
 # Conectar al MCP Server
-./ssh-connect.sh --mcp -f ~/.ssh/mcp-deploy-key.pem
+ssh -i ~/.ssh/key_pair_mcp_demo.pem ec2-user@<MCP-PUBLIC-IP>
+
+# Health check del MCP server (ejecutar desde el Bot o con SSH al MCP)
+curl http://<MCP-PRIVATE-IP>:8081/internal/health
 ```
 
 ## Gestión de servicios (dentro de EC2)
@@ -129,19 +130,43 @@ sudo journalctl -u telegram-bot -f
 sudo journalctl -u mcp-server --since "1 hour ago"
 ```
 
+## Verificar repositorios clonados (MCP Server)
+
+```bash
+ssh -i ~/.ssh/key_pair_mcp_demo.pem ec2-user@<MCP-PUBLIC-IP>
+
+# Ver todos los repos
+find ~/repos -maxdepth 2 -name '.git' -type d | sed 's|/.git||' | sort
+
+# Estructura esperada:
+# ~/repos/FEBOL/miatech/am-fe-mx-api
+# ~/repos/FEBOL/miatech/mi-fe-mx-front
+# ~/repos/FEBOL/miatech/mi-fe-mx-front-individual
+# ~/repos/FEBOL/am/FEBOL_MX_Backend_Read
+# ~/repos/FEBOL/am/FEBOL_MX_Backend_CronJobs
+# ~/repos/FEBOL/am/FEBOL_MX_Backend_Timbrado
+# ~/repos/FEBOL/am/FEBOL_MX_Backend_Input
+# ~/repos/FEBOL/am/FEBOL_MX_Backend_Write
+# ~/repos/FEBOL/am/FEBOL_MX_Backend_IRead
+# ~/repos/FEBOL/am/FEBOL_MX_Backend_IWrite
+# ~/repos/FEBOL/am/FEBOL_MX_Portal_Individual
+# ~/repos/FEBOL/am/FEBOL_MX_Portal
+# ~/repos/FEBOL/am-febol-devops/
+```
+
 ## Actualizar la aplicación (re-deploy solo de la app)
 
 ```bash
 # Hacer cambios en el código, luego:
 cd MCP-DEPLOY/infra/scripts
-./deploy.sh -f ~/.ssh/mcp-deploy-key.pem --app-only
+./deploy.sh --app-only
 ```
 
 ## Eliminar toda la infraestructura
 
 ```bash
 cd MCP-DEPLOY/infra/scripts
-./teardown.sh -s mcp-deploy -r us-east-2 -p mcp-deploy
+./teardown.sh -s mcp-deploy -r us-east-2 -p mcp-demo
 ```
 
 ⚠️ Esto elimina **todos** los recursos AWS incluyendo las instancias EC2 y la Elastic IP.
@@ -155,3 +180,32 @@ cd MCP-DEPLOY/infra/scripts
 | 2× EBS gp3 10 GB | ~$1.60 |
 | Tráfico de red | ~$0 |
 | **Total estimado** | **~$13-15/mes** |
+
+## Troubleshooting
+
+### telegram-bot.service falla al iniciar
+
+```bash
+sudo journalctl -u telegram-bot -n 50 --no-pager
+```
+
+Causas comunes:
+- **Claude no autenticado** → `claude` en el Bot EC2 y reiniciar
+- **`.env` mal configurado** → revisar `TELEGRAM_BOT_TOKEN` y `MCP_SERVER_HOST`
+- **MCP server no accesible** → verificar que `mcp-server.service` esté activo
+
+### Repos de Aeromexico no clonados (directorio `am` vacío)
+
+Si el token de AM no tiene permisos GraphQL, clonar manualmente:
+
+```bash
+ssh -i ~/.ssh/key_pair_mcp_demo.pem ec2-user@<MCP-PUBLIC-IP>
+AMX_TOKEN=$(grep GITHUB_AEROMEXICO_TOKEN /opt/mcp-deploy/app/.env | cut -d= -f2-)
+cd ~/repos/FEBOL/am
+
+for repo in FEBOL_MX_Backend_Read FEBOL_MX_Backend_CronJobs FEBOL_MX_Backend_Timbrado \
+            FEBOL_MX_Backend_Input FEBOL_MX_Backend_Write FEBOL_MX_Backend_IRead \
+            FEBOL_MX_Backend_IWrite FEBOL_MX_Portal_Individual FEBOL_MX_Portal; do
+    git clone "https://x-access-token:${AMX_TOKEN}@github.com/BO-AMX/${repo}.git"
+done
+```

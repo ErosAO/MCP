@@ -47,13 +47,16 @@ func runDeploy(dreq deploy.Request, requestedBy string, chatID int64) {
 	}
 
 	broadcast(fmt.Sprintf(
-		"⏳ <b>Deploy %s</b> en progreso...\nScope: <b>%s</b>  |  Usuario: <b>%s</b>\nSolicitado por: @%s",
-		dreq.Flow.Label(), dreq.Scope, dreq.User, requestedBy,
+		"⏳ <b>Deploy %s</b> en progreso...\nScope: <b>%s</b>\nSolicitado por: @%s",
+		dreq.Flow.Label(), dreq.Scope, requestedBy,
 	))
 
 	result := deploy.Execute(dreq, config.DeployScriptPath)
 
 	slog.Info("deploy finished", "exit_code", result.ExitCode, "failures", len(result.Summary.Failures))
+	if result.ExitCode != 0 {
+		slog.Error("deploy script output", "stdout", result.Stdout, "stderr", result.Stderr)
+	}
 	broadcast(result.FormatTelegram(dreq))
 }
 
@@ -116,14 +119,10 @@ func startInternalAPI() {
 			return
 		}
 
-		user := deploy.User(req.User)
-		if user == "" {
-			user = deploy.UserDeployer
-		}
 		dreq := deploy.Request{
 			Flow:  deploy.Flow(req.Flow),
 			Scope: deploy.Scope(req.Scope),
-			User:  user,
+			User:  deploy.UserDeployer,
 		}
 		go runDeploy(dreq, req.RequestedBy, req.ChatID)
 
@@ -175,9 +174,6 @@ func main() {
 				mcp.Required(),
 				mcp.Description("Alcance del deploy: individual | global | both"),
 			),
-			mcp.WithString("user",
-				mcp.Description("Usuario que ejecuta el script: franramvel | ErosAO | Haztel05 | deployer (default)"),
-			),
 			mcp.WithString("requested_by",
 				mcp.Description("Username de Telegram de quien solicita el deploy"),
 			),
@@ -188,10 +184,6 @@ func main() {
 		func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			flow := deploy.Flow(strArg(req, "flow"))
 			scope := deploy.Scope(strArg(req, "scope"))
-			user := deploy.User(strArg(req, "user"))
-			if user == "" {
-				user = deploy.UserDeployer
-			}
 			requestedBy := strArg(req, "requested_by")
 
 			var chatID int64
@@ -199,12 +191,12 @@ func main() {
 				chatID, _ = strconv.ParseInt(s, 10, 64)
 			}
 
-			dreq := deploy.Request{Flow: flow, Scope: scope, User: user}
+			dreq := deploy.Request{Flow: flow, Scope: scope, User: deploy.UserDeployer}
 			go runDeploy(dreq, requestedBy, chatID)
 
 			return mcp.NewToolResultText(fmt.Sprintf(
-				"🚀 Deploy %s (scope: %s, user: %s) iniciado por @%s. Recibirás notificación al terminar.",
-				flow.Label(), scope, user, requestedBy,
+				"🚀 Deploy %s (scope: %s) iniciado por @%s. Recibirás notificación al terminar.",
+				flow.Label(), scope, requestedBy,
 			)), nil
 		},
 	)
