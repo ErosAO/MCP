@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"html"
 	"os/exec"
 	"strings"
 	"time"
@@ -254,14 +255,14 @@ func (r Result) FormatTelegram(req Request) string {
 	if len(r.Summary.OK) > 0 {
 		msg += fmt.Sprintf("\n✅ <b>OK (%d):</b>\n", len(r.Summary.OK))
 		for _, o := range r.Summary.OK {
-			msg += fmt.Sprintf("  • %s [%s]\n", o.Repo, o.Step)
+			msg += fmt.Sprintf("  • %s [%s]\n", html.EscapeString(o.Repo), html.EscapeString(o.Step))
 		}
 	}
 
 	if len(r.Summary.Failures) > 0 {
 		msg += fmt.Sprintf("\n❌ <b>FALLOS (%d):</b>\n", len(r.Summary.Failures))
 		for _, f := range r.Summary.Failures {
-			msg += fmt.Sprintf("  • [%s] %s: %s\n", f.Step, f.Repo, f.Reason)
+			msg += fmt.Sprintf("  • [%s] %s: %s\n", html.EscapeString(f.Step), html.EscapeString(f.Repo), html.EscapeString(f.Reason))
 		}
 	}
 
