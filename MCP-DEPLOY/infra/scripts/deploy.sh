@@ -31,11 +31,11 @@ CFN_TEMPLATE="${ROOT_DIR}/infra/cloudformation/stack.yml"
 
 STACK_NAME="${STACK_NAME:-mcp-deploy}"
 AWS_REGION="${AWS_REGION:-us-east-2}"
-AWS_PROFILE="${AWS_PROFILE:-mcp-deploy}"
+AWS_PROFILE="${AWS_PROFILE:-mcp-demo}"
 INSTANCE_TYPE="${INSTANCE_TYPE:-t4g.micro}"
 SSH_CIDR="${SSH_CIDR:-0.0.0.0/0}"
 KEY_PAIR_NAME="${KEY_PAIR_NAME:-}"
-KEY_FILE="${KEY_FILE:-$HOME/.ssh/key_pair_mcp_deploy.pem}"
+KEY_FILE="${KEY_FILE:-$HOME/.ssh/key_pair_mcp_demo.pem}"
 INFRA_ONLY=false
 APP_ONLY=false
 SKIP_CONFIRM=false
