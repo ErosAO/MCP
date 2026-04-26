@@ -14,8 +14,10 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
+	"github.com/erosao/mcp-deploy/internal/awstools"
 	"github.com/erosao/mcp-deploy/internal/config"
 	"github.com/erosao/mcp-deploy/internal/deploy"
+	"github.com/erosao/mcp-deploy/internal/monitor"
 	"github.com/erosao/mcp-deploy/internal/notify"
 )
 
@@ -160,6 +162,9 @@ func main() {
 	// API interna para el bot (puerto 8081)
 	go startInternalAPI()
 
+	// Monitor de AWS CodePipeline / CodeBuild
+	monitor.Start(context.Background())
+
 	// Servidor MCP SSE para clientes Claude (puerto 8080)
 	s := server.NewMCPServer("MCP Deploy Server", "1.0.0")
 
@@ -198,6 +203,91 @@ func main() {
 				"🚀 Deploy %s (scope: %s) iniciado por @%s. Recibirás notificación al terminar.",
 				flow.Label(), scope, requestedBy,
 			)), nil
+		},
+	)
+
+	// ── AWS CodePipeline tools ────────────────────────────────────────────────
+
+	s.AddTool(
+		mcp.NewTool("list_pipelines",
+			mcp.WithDescription("Lista todos los CodePipelines de AWS con su fecha de última actualización."),
+			mcp.WithString("region",
+				mcp.Description("Región de AWS (ej: us-east-1). Si se omite usa AWS_REGION o la región por defecto."),
+			),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			result, err := awstools.ListPipelines(ctx, strArg(req, "region"))
+			if err != nil {
+				return mcp.NewToolResultText("Error: " + err.Error()), nil
+			}
+			return mcp.NewToolResultText(result), nil
+		},
+	)
+
+	s.AddTool(
+		mcp.NewTool("get_pipeline_state",
+			mcp.WithDescription("Muestra el estado actual de cada etapa (stage) y acción de un CodePipeline, incluyendo errores detallados si hay fallos."),
+			mcp.WithString("pipeline_name",
+				mcp.Required(),
+				mcp.Description("Nombre del CodePipeline a consultar."),
+			),
+			mcp.WithString("region",
+				mcp.Description("Región de AWS. Si se omite usa AWS_REGION o la región por defecto."),
+			),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			result, err := awstools.GetPipelineState(ctx, strArg(req, "pipeline_name"), strArg(req, "region"))
+			if err != nil {
+				return mcp.NewToolResultText("Error: " + err.Error()), nil
+			}
+			return mcp.NewToolResultText(result), nil
+		},
+	)
+
+	// ── AWS CodeBuild tools ───────────────────────────────────────────────────
+
+	s.AddTool(
+		mcp.NewTool("list_codebuild_projects",
+			mcp.WithDescription("Lista todos los proyectos de AWS CodeBuild disponibles en la región."),
+			mcp.WithString("region",
+				mcp.Description("Región de AWS. Si se omite usa AWS_REGION o la región por defecto."),
+			),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			result, err := awstools.ListCodeBuildProjects(ctx, strArg(req, "region"))
+			if err != nil {
+				return mcp.NewToolResultText("Error: " + err.Error()), nil
+			}
+			return mcp.NewToolResultText(result), nil
+		},
+	)
+
+	s.AddTool(
+		mcp.NewTool("get_codebuild_builds",
+			mcp.WithDescription("Muestra los builds recientes de un proyecto CodeBuild. Para builds fallidos incluye la fase que falló, el mensaje de error y el enlace a los logs de CloudWatch."),
+			mcp.WithString("project_name",
+				mcp.Required(),
+				mcp.Description("Nombre del proyecto de CodeBuild."),
+			),
+			mcp.WithString("region",
+				mcp.Description("Región de AWS. Si se omite usa AWS_REGION o la región por defecto."),
+			),
+			mcp.WithString("max_results",
+				mcp.Description("Número máximo de builds a mostrar (1-20, default: 5)."),
+			),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			maxResults := 5
+			if s := strArg(req, "max_results"); s != "" {
+				if n, err := strconv.Atoi(s); err == nil {
+					maxResults = n
+				}
+			}
+			result, err := awstools.GetCodeBuildBuilds(ctx, strArg(req, "project_name"), strArg(req, "region"), maxResults)
+			if err != nil {
+				return mcp.NewToolResultText("Error: " + err.Error()), nil
+			}
+			return mcp.NewToolResultText(result), nil
 		},
 	)
 

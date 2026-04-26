@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/joho/godotenv"
 )
@@ -33,6 +34,12 @@ var (
 
 	// Directorio de logs
 	LogsDir string
+
+	// AWS monitor
+	AWSRegion        string
+	MonitorPipelines []string
+	MonitorCodeBuild []string
+	MonitorInterval  time.Duration
 )
 
 func init() {
@@ -76,6 +83,24 @@ func init() {
 			}
 		}
 	}
+
+	// AWS monitor
+	AWSRegion = getEnv("AWS_REGION", "us-east-1")
+	if raw := getEnv("AWS_MONITOR_PIPELINES", ""); raw != "" {
+		for _, p := range strings.Split(raw, ",") {
+			if p = strings.TrimSpace(p); p != "" {
+				MonitorPipelines = append(MonitorPipelines, p)
+			}
+		}
+	}
+	if raw := getEnv("AWS_MONITOR_CODEBUILD", ""); raw != "" {
+		for _, p := range strings.Split(raw, ",") {
+			if p = strings.TrimSpace(p); p != "" {
+				MonitorCodeBuild = append(MonitorCodeBuild, p)
+			}
+		}
+	}
+	MonitorInterval = getEnvDuration("AWS_MONITOR_INTERVAL", 5*time.Minute)
 
 	os.MkdirAll(LogsDir, 0o755)
 }
@@ -124,6 +149,15 @@ func getEnvInt(key string, fallback int) int {
 	if v := os.Getenv(key); v != "" {
 		if i, err := strconv.Atoi(v); err == nil {
 			return i
+		}
+	}
+	return fallback
+}
+
+func getEnvDuration(key string, fallback time.Duration) time.Duration {
+	if v := os.Getenv(key); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
 		}
 	}
 	return fallback
